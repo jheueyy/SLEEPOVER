@@ -16,6 +16,8 @@ config/icon="res://icon.svg"
 
 ; Global "noise ping" bus. Player emits pings; monster listens.
 NoiseBus="*res://scripts/NoiseBus.gd"
+; Steam init + lobby helpers (GodotSteam). Fails soft into solo mode.
+SteamManager="*res://scripts/SteamManager.gd"
 
 [physics]
 

@@ -34,8 +34,21 @@ var _pitch: float = 0.0
 var _lookback: float = 0.0   ## 0 = forward, 1 = fully turned around (Q held)
 var _aim: MeshInstance3D
 var _state_label: Label
+var _net_label: Label
 var _pips: Array[ColorRect] = []
 var _caught: bool = false
+
+# ── Networking (Week-1 GodotSteam spike) ───────────────────────────────────
+# Each peer simulates its OWN bag; remote bags are interpolated ghosts.
+# The HOST is authoritative for the monster: it simulates, clients display.
+var _remote_bags: Dictionary = {}     ## peer_id -> Node3D ghost
+var _ghost_targets: Dictionary = {}   ## peer_id -> [pos: Vector3, rot: Quaternion]
+var _monster_target: Vector3
+var _has_monster_target: bool = false
+var _net_accum: float = 0.0
+
+const NET_SEND_INTERVAL := 0.05       ## 20 Hz state sync
+const GHOST_LERP := 10.0              ## ~100ms interpolation buffer feel
 
 const PIP_ON := Color(1.0, 0.85, 0.25)
 const PIP_OFF := Color(0.25, 0.25, 0.28)
@@ -47,6 +60,14 @@ func _ready() -> void:
 	_build_camera()
 	_build_hud()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+	SteamManager.lobby_ready.connect(_on_lobby_ready)
+	SteamManager.lobby_failed.connect(func(reason: String) -> void:
+		_net_label.text = "NET: " + reason)
+	multiplayer.peer_connected.connect(_on_peer_connected)
+	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
+	NoiseBus.noise_emitted.connect(_on_local_noise)
+	_update_net_label()
 
 # ── World ──────────────────────────────────────────────────────────────────
 
@@ -159,6 +180,11 @@ func _build_hud() -> void:
 	_state_label.add_theme_font_size_override("font_size", 22)
 	layer.add_child(_state_label)
 
+	_net_label = Label.new()
+	_net_label.position = Vector2(16, 72)
+	_net_label.add_theme_color_override("font_color", Color(0.6, 0.8, 1.0))
+	layer.add_child(_net_label)
+
 	# Stamina pip bar, bottom-center — players must FEEL the count, not read it.
 	var pip_row := HBoxContainer.new()
 	pip_row.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
@@ -179,10 +205,16 @@ func _unhandled_input(event: InputEvent) -> void:
 		_yaw -= event.relative.x * mouse_sensitivity
 		_pitch = clampf(_pitch - event.relative.y * mouse_sensitivity,
 			deg_to_rad(-55.0), deg_to_rad(25.0))
-	elif event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
-		Input.mouse_mode = (Input.MOUSE_MODE_VISIBLE
-			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
-			else Input.MOUSE_MODE_CAPTURED)
+	elif event is InputEventKey and event.pressed and not event.echo:
+		match event.keycode:
+			KEY_ESCAPE:
+				Input.mouse_mode = (Input.MOUSE_MODE_VISIBLE
+					if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+					else Input.MOUSE_MODE_CAPTURED)
+			KEY_H:
+				SteamManager.host_lobby()
+			KEY_J:
+				SteamManager.join_lobby()
 	elif event is InputEventMouseButton and event.pressed:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
@@ -218,6 +250,130 @@ func _process(delta: float) -> void:
 	# Stamina pips: lit = a hop you can afford.
 	for i in range(_pips.size()):
 		_pips[i].color = PIP_ON if _player.stamina >= float(i + 1) else PIP_OFF
+
+	_net_tick(delta)
+
+# ── Networking: state sync (Week-1 GodotSteam spike) ───────────────────────
+
+func _net_connected() -> bool:
+	return multiplayer.has_multiplayer_peer() \
+		and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED \
+		and multiplayer.get_peers().size() > 0
+
+func _net_tick(delta: float) -> void:
+	# Smoothly interpolate remote ghosts toward their latest network state.
+	var t := clampf(GHOST_LERP * delta, 0.0, 1.0)
+	for pid: int in _remote_bags:
+		var ghost: Node3D = _remote_bags[pid]
+		var target: Array = _ghost_targets.get(pid, [])
+		if target.size() == 2:
+			ghost.global_position = ghost.global_position.lerp(target[0], t)
+			ghost.quaternion = ghost.quaternion.slerp(target[1], t)
+
+	if not _net_connected():
+		return
+
+	# Client: display the host's monster.
+	if not multiplayer.is_server() and _has_monster_target:
+		_monster.global_position = _monster.global_position.lerp(_monster_target, t)
+
+	# Host: aim the monster at whichever bag is nearest (local or remote ghost).
+	if multiplayer.is_server():
+		_monster.player = _nearest_bag()
+		# Host also catches remote players.
+		for pid: int in _remote_bags:
+			if _monster.global_position.distance_to(_remote_bags[pid].global_position) < catch_radius:
+				_net_caught.rpc_id(pid)
+
+	# 20 Hz state broadcast.
+	_net_accum += delta
+	if _net_accum < NET_SEND_INTERVAL:
+		return
+	_net_accum = 0.0
+	_net_bag_state.rpc(_player.global_position, _player.quaternion)
+	if multiplayer.is_server():
+		_net_monster_state.rpc(_monster.global_position)
+
+func _nearest_bag() -> Node3D:
+	var best: Node3D = _player
+	var best_d := _monster.global_position.distance_to(_player.global_position)
+	for pid: int in _remote_bags:
+		var d := _monster.global_position.distance_to(_remote_bags[pid].global_position)
+		if d < best_d:
+			best_d = d
+			best = _remote_bags[pid]
+	return best
+
+@rpc("any_peer", "call_remote", "unreliable_ordered")
+func _net_bag_state(pos: Vector3, rot: Quaternion) -> void:
+	var pid := multiplayer.get_remote_sender_id()
+	if not _remote_bags.has(pid):
+		_spawn_remote_bag(pid)
+	_ghost_targets[pid] = [pos, rot]
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _net_monster_state(pos: Vector3) -> void:
+	_monster_target = pos
+	_has_monster_target = true
+
+@rpc("any_peer", "call_remote", "reliable")
+func _net_noise(pos: Vector3, loudness: float) -> void:
+	# A remote player made noise — replay it locally so the host monster hears.
+	NoiseBus.emit_noise(pos, loudness)
+
+@rpc("authority", "call_remote", "reliable")
+func _net_caught() -> void:
+	if not _caught:
+		_caught = true
+		_player.set_caught()
+
+func _on_local_noise(pos: Vector3, loudness: float) -> void:
+	# Forward our own noise pings to the host so its monster reacts to us.
+	if _net_connected() and not multiplayer.is_server():
+		_net_noise.rpc_id(1, pos, loudness)
+
+func _on_lobby_ready(_lobby_id: int, is_host: bool) -> void:
+	if not is_host:
+		# The host simulates the monster; we only display its synced position.
+		_monster.set_physics_process(false)
+	_update_net_label()
+
+func _on_peer_connected(_pid: int) -> void:
+	_update_net_label()
+
+func _on_peer_disconnected(pid: int) -> void:
+	if _remote_bags.has(pid):
+		_remote_bags[pid].queue_free()
+		_remote_bags.erase(pid)
+		_ghost_targets.erase(pid)
+	_update_net_label()
+
+func _spawn_remote_bag(pid: int) -> Node3D:
+	# A ghost: same silhouette, different color, no physics — pure display.
+	var ghost := Node3D.new()
+	var mesh := MeshInstance3D.new()
+	var capsule := CapsuleMesh.new()
+	capsule.radius = 0.35
+	capsule.height = 1.3
+	mesh.mesh = capsule
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.55, 0.15)  # orange vs your cyan
+	mesh.set_surface_override_material(0, mat)
+	ghost.add_child(mesh)
+	add_child(ghost)
+	ghost.global_position = _player.global_position
+	_remote_bags[pid] = ghost
+	return ghost
+
+func _update_net_label() -> void:
+	if not SteamManager.steam_ok:
+		_net_label.text = "NET: Steam offline — solo mode"
+	elif SteamManager.lobby_id == 0:
+		_net_label.text = "NET: solo (%s)   H = host lobby   J = join lobby" % SteamManager.persona()
+	else:
+		var role := "HOST" if SteamManager.is_host else "CLIENT"
+		_net_label.text = "NET: %s in lobby %d — %d player(s) connected" % [
+			role, SteamManager.lobby_id, multiplayer.get_peers().size() + 1]
 
 func _update_camera(delta: float) -> void:
 	# Q look-back: swings the camera (not your movement heading) 180°.
