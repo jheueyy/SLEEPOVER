@@ -1,0 +1,18 @@
+# Godot 4 (standard, non-.NET)
+.godot/
+.import/
+export.cfg
+export_presets.cfg
+*.translation
+
+# Mono / .NET (unused here, but future-proof)
+.mono/
+data_*/
+mono_crash.*.json
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Local Claude Code settings (machine-specific permissions)
+.claude/settings.local.json
