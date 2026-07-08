@@ -313,17 +313,21 @@ func _net_bag_state(pos: Vector3, rot: Quaternion) -> void:
 
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _net_monster_state(pos: Vector3) -> void:
+	if not _has_monster_target:
+		print("[NETTEST] first monster state received from host")
 	_monster_target = pos
 	_has_monster_target = true
 
 @rpc("any_peer", "call_remote", "reliable")
 func _net_noise(pos: Vector3, loudness: float) -> void:
 	# A remote player made noise — replay it locally so the host monster hears.
+	print("[NETTEST] noise received from peer %d" % multiplayer.get_remote_sender_id())
 	NoiseBus.emit_noise(pos, loudness)
 
 @rpc("authority", "call_remote", "reliable")
 func _net_caught() -> void:
 	if not _caught:
+		print("[NETTEST] caught by host monster")
 		_caught = true
 		_player.set_caught()
 
@@ -332,10 +336,16 @@ func _on_local_noise(pos: Vector3, loudness: float) -> void:
 	if _net_connected() and not multiplayer.is_server():
 		_net_noise.rpc_id(1, pos, loudness)
 
-func _on_lobby_ready(_lobby_id: int, is_host: bool) -> void:
+func _on_lobby_ready(lobby_id: int, is_host: bool) -> void:
 	if not is_host:
 		# The host simulates the monster; we only display its synced position.
 		_monster.set_physics_process(false)
+	if lobby_id == -1 and not is_host:
+		# ENet loopback test mode: fire an automated noise ping so the
+		# noise-forwarding and catch RPCs get exercised without input.
+		get_tree().create_timer(2.0).timeout.connect(func() -> void:
+			NoiseBus.emit_noise(_player.global_position, 1.0)
+			print("[NETTEST] client emitted noise ping"))
 	_update_net_label()
 
 func _on_peer_connected(_pid: int) -> void:
@@ -363,6 +373,7 @@ func _spawn_remote_bag(pid: int) -> Node3D:
 	add_child(ghost)
 	ghost.global_position = _player.global_position
 	_remote_bags[pid] = ghost
+	print("[NETTEST] ghost bag spawned for peer %d" % pid)
 	return ghost
 
 func _update_net_label() -> void:

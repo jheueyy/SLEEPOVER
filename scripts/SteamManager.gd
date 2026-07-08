@@ -21,6 +21,17 @@ var lobby_id: int = 0
 var is_host: bool = false
 
 func _ready() -> void:
+	# Dev loopback mode: `-- --enet-host` / `-- --enet-join` runs the exact same
+	# RPC sync over ENet on localhost, no Steam needed. Used for automated
+	# two-instance sync tests; Steam transport itself is tested with a friend.
+	var args := OS.get_cmdline_user_args()
+	if args.has("--enet-host"):
+		_start_enet(true)
+		return
+	if args.has("--enet-join"):
+		_start_enet(false)
+		return
+
 	var res: Dictionary = Steam.steamInitEx(APP_ID)
 	steam_ok = int(res.get("status", 1)) == Steam.STEAM_API_INIT_RESULT_OK
 	if not steam_ok:
@@ -84,3 +95,17 @@ func _on_lobby_match_list(lobbies: Array) -> void:
 		lobby_failed.emit("no open lobby found — has the host pressed H?")
 		return
 	Steam.joinLobby(lobbies[0])
+
+func _start_enet(host: bool) -> void:
+	var peer := ENetMultiplayerPeer.new()
+	var err := peer.create_server(24565, MAX_PLAYERS - 1) if host \
+		else peer.create_client("127.0.0.1", 24565)
+	if err != OK:
+		lobby_failed.emit("ENet loopback setup failed (%d)" % err)
+		return
+	multiplayer.multiplayer_peer = peer
+	is_host = host
+	lobby_id = -1  # sentinel: dev loopback, not a Steam lobby
+	print("[NETTEST] ENet %s ready" % ("host" if host else "client"))
+	# Defer so Main exists and has connected to lobby_ready before we emit.
+	lobby_ready.emit.call_deferred(-1, host)
