@@ -69,17 +69,21 @@ Change **one** number at a time. That's the whole job this week.
 
 ---
 
-## What's here
+## What's here (HouseKit layout — spec 1.1)
 ```
-project.godot        # Godot 4.3 project + NoiseBus autoload + gravity tweak
-icon.svg             # placeholder app icon
-scenes/Main.tscn     # tiny root scene; everything is built in code
-scripts/
-  Main.gd            # gray-box level, low chase cam (SpringArm3D), HUD + pips, catch/reset
-  Player.gd          # the upright sleeping-bag RigidBody — shuffle/hop/stamina/tumble
-  Monster.gd         # red-cube noise-homing placeholder
-  NoiseBus.gd        # global "noise ping" signal bus (autoload)
-FEEL.md              # every tuning constant, with what-if guidance
+project.godot            # Godot 4.7 project + autoloads + gravity tweak
+core/
+  player/Player.gd       # the upright sleeping-bag RigidBody — shuffle/hop/stamina/tumble
+  networking/SteamManager.gd  # Steam init + lobby helpers (+ ENet loopback test mode)
+  audio/NoiseBus.gd      # global "noise ping" signal bus (autoload)
+games/sleepover/
+  Main.tscn / Main.gd    # game scene: camera, HUD, catch/reset, 20Hz net sync
+  Monster.gd             # red-cube Housesitter placeholder (Patrol/Investigate/Chase)
+maps/house_suburban/
+  HouseSuburban.gd       # data-driven full-house gray-box (16 rooms, 3 stairs, chute)
+addons/godotsteam/       # GodotSteam 4.20 GDExtension
+FEEL.md                  # every tuning constant, with what-if guidance
+FRIEND_SETUP.md          # cold-start guide for playtesters
 ```
 
 ## Deliberately NOT in this milestone

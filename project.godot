@@ -8,16 +8,16 @@ config_version=5
 
 config/name="Sleepover — Week 1 Kill Test"
 config/description="Prove sleeping-bag locomotion is funny in its ugliest form."
-run/main_scene="res://scenes/Main.tscn"
+run/main_scene="res://games/sleepover/Main.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"
 
 [autoload]
 
 ; Global "noise ping" bus. Player emits pings; monster listens.
-NoiseBus="*res://scripts/NoiseBus.gd"
+NoiseBus="*res://core/audio/NoiseBus.gd"
 ; Steam init + lobby helpers (GodotSteam). Fails soft into solo mode.
-SteamManager="*res://scripts/SteamManager.gd"
+SteamManager="*res://core/networking/SteamManager.gd"
 
 [physics]
 

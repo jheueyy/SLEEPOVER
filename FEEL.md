@@ -17,7 +17,7 @@ engine works.
 
 ---
 
-## Player (`scripts/Player.gd`) — upright potato-sack posture
+## Player (`core/player/Player.gd`) — upright potato-sack posture
 
 ### Shuffle — the safe, agonizing baseline
 | Constant | Default | What it does | If it feels wrong |
@@ -50,7 +50,7 @@ engine works.
 
 ---
 
-## Camera (`scripts/Main.gd`) — the horror multiplier
+## Camera (`games/sleepover/Main.gd`) — the horror multiplier
 | Constant | Default | What it does | Design rule |
 |---|---|---|---|
 | `cam_height` | 0.9 | pivot height above the bag | LOW — the house must loom |
@@ -68,7 +68,7 @@ engine works.
 
 ---
 
-## Monster (`scripts/Monster.gd`) — Patrol → Investigate → Chase
+## Monster (`games/sleepover/Monster.gd`) — Patrol → Investigate → Chase
 | Constant | Default | What it does | Design rule |
 |---|---|---|---|
 | `move_speed` | 2.6 | chase speed | **faster than shuffle, slower than a hop chain** — 3.3 → 3.0 → 2.6 via playtests |
