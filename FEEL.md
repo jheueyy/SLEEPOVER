@@ -85,6 +85,10 @@ engine works.
 > does not break a chase. Any ping (or getting within `proximity_sense`)
 > refreshes its memory; it only gives up after `chase_memory` secs of zero
 > contact, then checks your last known position before returning to patrol.
+>
+> Movement is navmesh-routed (baked from the gray-box at startup): it hunts
+> through doorways, up stairs, and across all four floors, gliding along the
+> path. It spawns in the DINING ROOM and wanders there until it hears you.
 
 ---
 

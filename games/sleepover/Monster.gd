@@ -1,14 +1,17 @@
 extends CharacterBody3D
 class_name NoiseMonster
 ## Placeholder "Housesitter": a red cube with the real Patrol -> Investigate ->
-## Chase state machine (spec 3.4). It hears noise pings (hops, tumbles, YOUR MIC):
-##   PATROL      — idle drift near spawn
-##   INVESTIGATE — walk to the last ping's location; arrive quietly = give up
+## Chase state machine (spec 3.4). It hears noise pings (hop thumps, tumbles):
+##   PATROL      — slow wander around its haunt
+##   INVESTIGATE — path to the last ping's location; arrive quietly = give up
 ##   CHASE       — locked onto the PLAYER, tracks their live position. Entered
 ##                 when a ping happens close to it, or it gets near enough while
 ##                 investigating. Going silent does NOT break a chase — it only
 ##                 gives up after `chase_memory` secs without any contact.
-## Touch the player = caught (Main handles the freeze).
+## Movement is navmesh-routed (baked by Main from the house gray-box): it walks
+## through doorways, up stairs, and across floors. Along a path it GLIDES —
+## velocity follows the path in 3D — which reads uncanny in exactly the right
+## way. Touch the player = caught (Main handles the freeze).
 
 @export var move_speed: float = 2.6        ## faster than shuffle, loses to a hop chain
 @export var gravity: float = 12.0
@@ -33,17 +36,18 @@ var _has_target: bool = false
 var _patrol_origin: Vector3
 var _patrol_dir: float = 1.0
 var _spawn: Transform3D
+var _nav: NavigationAgent3D
 
 func _ready() -> void:
 	var shape := CollisionShape3D.new()
 	var box := BoxShape3D.new()
-	box.size = Vector3(0.9, 0.9, 0.9)
+	box.size = Vector3(0.8, 0.8, 0.8)  # fits through the 1.1m doorways
 	shape.shape = box
 	add_child(shape)
 
 	var mesh := MeshInstance3D.new()
 	var box_mesh := BoxMesh.new()
-	box_mesh.size = Vector3(0.9, 0.9, 0.9)
+	box_mesh.size = Vector3(0.8, 0.8, 0.8)
 	mesh.mesh = box_mesh
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.9, 0.1, 0.1)
@@ -51,6 +55,13 @@ func _ready() -> void:
 	mat.emission = Color(0.5, 0.0, 0.0)
 	mesh.set_surface_override_material(0, mat)
 	add_child(mesh)
+
+	_nav = NavigationAgent3D.new()
+	_nav.path_desired_distance = 0.6
+	_nav.target_desired_distance = 0.5
+	_nav.path_height_offset = 0.45  # paths hug the floor; our center rides above
+	_nav.path_max_distance = 5.0
+	add_child(_nav)
 
 	_spawn = global_transform
 	_patrol_origin = global_position
@@ -82,13 +93,20 @@ func _on_noise(pos: Vector3, loudness: float) -> void:
 		_state = State.INVESTIGATE  # distant noise: go take a look
 
 func _physics_process(delta: float) -> void:
-	var desired := Vector3.ZERO
+	var goal := global_position
+	var has_goal := false
+	var speed := move_speed
+
 	match _state:
 		State.PATROL:
-			# Idle drift back and forth around the spawn point.
-			if absf(global_position.x - _patrol_origin.x) > patrol_span:
+			# Slow wander between two points around the haunt.
+			var p := _patrol_origin + Vector3(_patrol_dir * patrol_span, 0.0, 0.0)
+			if _flat_distance(p) < 0.8:
 				_patrol_dir *= -1.0
-			desired = Vector3(_patrol_dir * move_speed * 0.4, 0.0, 0.0)
+				p = _patrol_origin + Vector3(_patrol_dir * patrol_span, 0.0, 0.0)
+			goal = p
+			has_goal = true
+			speed = move_speed * 0.4
 
 		State.INVESTIGATE:
 			# Getting near the player mid-investigation = it notices you.
@@ -98,13 +116,12 @@ func _physics_process(delta: float) -> void:
 				_tracked_pos = player.global_position
 				_track_cd = track_interval
 			elif _has_target:
-				var to := _target - global_position
-				to.y = 0.0
-				if to.length() < 0.6:
+				if _flat_distance(_target) < 0.8:
 					_has_target = false
 					_state = State.PATROL  # nothing here — false alarm
 				else:
-					desired = to.normalized() * move_speed
+					goal = _target
+					has_goal = true
 			else:
 				_state = State.PATROL
 
@@ -118,18 +135,36 @@ func _physics_process(delta: float) -> void:
 				if _track_cd <= 0.0:
 					_tracked_pos = player.global_position
 					_track_cd = track_interval
-				var to := _tracked_pos - global_position
-				to.y = 0.0
-				if to.length() > 0.1:
-					desired = to.normalized() * move_speed
+				goal = _tracked_pos
+				has_goal = true
 			_chase_timer -= delta
 			if _chase_timer <= 0.0:
 				_state = State.INVESTIGATE  # lost you — check last known noise
+
+	# Route the goal through the navmesh (doorways, stairs, floors).
+	var desired := Vector3.ZERO
+	if has_goal and _nav_map_ready():
+		_nav.target_position = goal
+		if not _nav.is_navigation_finished():
+			var to := _nav.get_next_path_position() - global_position
+			if to.length() > 0.05:
+				desired = to.normalized() * speed
 
 	# Turn inertia: it can't whip around instantly. Committed momentum is what
 	# makes juking past it possible — and what makes near-misses feel earned.
 	var t := clampf(turn_rate * delta, 0.0, 1.0)
 	velocity.x = lerpf(velocity.x, desired.x, t)
 	velocity.z = lerpf(velocity.z, desired.z, t)
-	velocity.y -= gravity * delta
+	if desired == Vector3.ZERO:
+		velocity.y -= gravity * delta  # idle: stay planted on the floor
+	else:
+		velocity.y = desired.y         # on a path: glide along it (stairs etc.)
 	move_and_slide()
+
+func _flat_distance(to: Vector3) -> float:
+	var d := to - global_position
+	return Vector2(d.x, d.z).length()
+
+func _nav_map_ready() -> bool:
+	# The navmesh bakes at startup; queries before the map's first sync fail.
+	return NavigationServer3D.map_get_iteration_id(_nav.get_navigation_map()) > 0

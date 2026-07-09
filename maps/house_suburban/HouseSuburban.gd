@@ -14,16 +14,16 @@ extends Object
 const WALL_T := 0.3
 const WALL_H := 3.0
 const DOOR_H := 2.0
-const DOOR_W := 1.0
+const DOOR_W := 1.1  # wide enough for the navmesh (agent radius 0.35) to pass
 
 # Where players wake up (living room). Slot 0 = host/solo, clients pick 1+.
 const SPAWNS: Array[Vector3] = [
 	Vector3(-5.0, 1.0, 1.0), Vector3(-3.5, 1.0, 1.5), Vector3(-6.0, 1.0, 2.5),
 	Vector3(-3.5, 1.0, 3.0), Vector3(-5.0, 1.0, 4.0), Vector3(-6.5, 1.0, 3.8),
 ]
-# Living room far corner, clear of the spawn cluster (its idle patrol must not
-# sweep through waking players). Stays in this room until navmesh (Phase 2).
-const MONSTER_SPAWN := Vector3(-2.0, 1.0, 5.2)
+# Dining room — with navmesh it hunts through the whole house, so it starts
+# a couple of doorways away from the sleeping players.
+const MONSTER_SPAWN := Vector3(0.0, 1.0, -3.5)
 
 # ── Layout data ────────────────────────────────────────────────────────────
 

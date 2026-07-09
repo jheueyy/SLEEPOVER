@@ -89,7 +89,20 @@ func _build_environment() -> void:
 
 func _build_level() -> void:
 	# The full suburban house gray-box — layout data lives with the map.
-	HouseSuburban.build(self)
+	# Built under a NavigationRegion3D so the monster's navmesh bakes from it.
+	var nav_region := NavigationRegion3D.new()
+	add_child(nav_region)
+	HouseSuburban.build(nav_region)
+
+	var nm := NavigationMesh.new()
+	nm.geometry_parsed_geometry_type = NavigationMesh.PARSED_GEOMETRY_STATIC_COLLIDERS
+	nm.agent_radius = 0.35        # doors are 1.1m wide — leaves a walkable gap
+	nm.agent_height = 1.6
+	nm.agent_max_climb = 0.4      # stair steps rise 0.3; must survive voxel floor
+	nm.cell_size = 0.2            # matches navigation/3d defaults in project.godot
+	nm.cell_height = 0.2
+	nav_region.navigation_mesh = nm
+	nav_region.bake_navigation_mesh(false)  # synchronous — one beat at startup
 
 func _spawn_actors() -> void:
 	_player = SleepingBagPlayer.new()
@@ -99,9 +112,7 @@ func _spawn_actors() -> void:
 	_monster = NoiseMonster.new()
 	_monster.position = HouseSuburban.MONSTER_SPAWN
 	_monster.player = _player
-	# Straight-line homing can't path around walls yet (navmesh is a Phase 2
-	# item) — keep its idle wander short so it doesn't grind against walls.
-	_monster.patrol_span = 1.5
+	_monster.patrol_span = 2.0  # wanders its room; navmesh handles the rest
 	add_child(_monster)
 
 	# Floating aim arrow so you can read your heading (the bag itself tumbles).
@@ -221,6 +232,7 @@ func _process(delta: float) -> void:
 	if not _caught and _player.global_position.distance_to(_monster.global_position) < catch_radius:
 		_caught = true
 		_player.set_caught()
+		print("[NETTEST] local player caught")
 
 	if _caught:
 		_state_label.text = "CAUGHT!  Press R to reset"
