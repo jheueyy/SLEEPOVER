@@ -38,7 +38,7 @@ Either:
 | **W/A/S/D** (mash) | Get up after falling over |
 | **Mouse** | Camera |
 | **Q** (hold) | Look behind you |
-| **R** | Reset if stuck |
+| **R** | Reset the round (host only — ask them if you're stuck) |
 
 The red cube hunts **noise** — hop landings and crashes. Shuffling is silent.
 It's faster than your shuffle and slower than your hops... while your stamina lasts.

@@ -171,7 +171,7 @@ func _build_hud() -> void:
 	add_child(layer)
 
 	var help := Label.new()
-	help.text = "WASD shuffle   Space hop (1 pip — empty = face-plant!)   Q look back   R reset   Esc cursor"
+	help.text = "WASD shuffle   Space hop (1 pip — empty = face-plant!)   Q look back   R reset (host)   Esc cursor"
 	help.position = Vector2(16, 12)
 	layer.add_child(help)
 
@@ -215,15 +215,14 @@ func _unhandled_input(event: InputEvent) -> void:
 				SteamManager.host_lobby()
 			KEY_J:
 				SteamManager.join_lobby()
+			KEY_R:
+				_reset()
 	elif event is InputEventMouseButton and event.pressed:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 # ── Frame loop ─────────────────────────────────────────────────────────────
 
 func _process(delta: float) -> void:
-	if Input.is_key_pressed(KEY_R):
-		_reset()
-
 	_update_camera(delta)
 
 	# Movement is camera-relative: tell the player which way "W" points.
@@ -346,6 +345,9 @@ func _on_lobby_ready(lobby_id: int, is_host: bool) -> void:
 		get_tree().create_timer(2.0).timeout.connect(func() -> void:
 			NoiseBus.emit_noise(_player.global_position, 1.0)
 			print("[NETTEST] client emitted noise ping"))
+	elif lobby_id == -1 and is_host:
+		# ...and the host orders a round reset late in the test window.
+		get_tree().create_timer(10.0).timeout.connect(_reset)
 	_update_net_label()
 
 func _on_peer_connected(_pid: int) -> void:
@@ -407,9 +409,24 @@ func _update_camera(delta: float) -> void:
 	# The FOV kick above carries the proximity dread on its own.
 
 func _reset() -> void:
+	# In a lobby the round is host-authoritative: only the host's R resets,
+	# and it resets EVERYONE. Clients' R does nothing while connected.
+	if _net_connected():
+		if multiplayer.is_server():
+			_net_reset.rpc()
+			_do_reset()
+	else:
+		_do_reset()
+
+func _do_reset() -> void:
 	_caught = false
 	_player.respawn()
 	_monster.respawn()
+
+@rpc("authority", "call_remote", "reliable")
+func _net_reset() -> void:
+	print("[NETTEST] reset ordered by host")
+	_do_reset()
 
 # ── Geometry helper ────────────────────────────────────────────────────────
 
