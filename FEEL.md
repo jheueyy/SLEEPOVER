@@ -86,9 +86,9 @@ engine works.
 > contact, then checks your last known position before returning to patrol.
 >
 > Movement is navmesh-routed (baked from the gray-box at startup) and the body
-> has NO world collision — it glides kinematically along the path, so doorways,
-> stairs, and floor changes can never physically block it. It spawns in the
-> DINING ROOM and wanders there until it hears you.
+> has NO world collision — geometry can never block or snag it. It walks the
+> path with its feet snapped to the surface underfoot, so it climbs stairs
+> tread by tread. Spawns in the DINING ROOM and wanders there until it hears you.
 
 ---
 

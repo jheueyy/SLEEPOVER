@@ -9,9 +9,10 @@ class_name NoiseMonster
 ##                 investigating. Going silent does NOT break a chase — it only
 ##                 gives up after `chase_memory` secs without any contact.
 ## Movement is navmesh-routed (baked by Main from the house gray-box) and the
-## body has NO world collision — it glides kinematically along the path, so
-## doorways, stairs, and floor changes can never physically block it. The
-## navmesh IS its physics. Reads uncanny in exactly the right way.
+## body has NO world collision — the path decides where it goes, so doorways,
+## stairs, and floor changes can never physically block it. It walks the path
+## horizontally with its feet snapped to the surface underfoot, so it visibly
+## climbs stairs tread by tread instead of floating.
 ## Touch the player = caught (Main's distance check handles the freeze).
 
 @export var move_speed: float = 2.6        ## faster than shuffle, loses to a hop chain
@@ -20,7 +21,7 @@ class_name NoiseMonster
 @export var chase_trigger_range: float = 6.0 ## ping this close to it = instant chase
 @export var proximity_sense: float = 3.5   ## it just KNOWS you're there this close
 @export var chase_memory: float = 6.0      ## secs of silence before it loses you
-@export var turn_rate: float = 2.5         ## how fast it can change direction — lower = more committed, easier to juke
+@export var turn_rate: float = 2.5         ## heading turn speed in rad/s (~143°/s) — lower = more committed, easier to juke
 @export var track_interval: float = 0.4    ## secs between "where are they now" checks — it aims where you WERE
 
 enum State { PATROL, INVESTIGATE, CHASE }
@@ -35,9 +36,11 @@ var _target: Vector3
 var _has_target: bool = false
 var _patrol_origin: Vector3
 var _patrol_dir: float = 1.0
+var debug_nav: bool = false        ## loopback test mode: dump agent state
 var _spawn: Transform3D
 var _nav: NavigationAgent3D
 var _move_dir: Vector3 = Vector3.ZERO  ## smoothed heading along the nav path
+var _debug_tick: int = 0
 
 func _ready() -> void:
 	# No collision shape and no layers: the world can't stop it, only the
@@ -141,23 +144,45 @@ func _physics_process(delta: float) -> void:
 			if _chase_timer <= 0.0:
 				_state = State.INVESTIGATE  # lost you — check last known noise
 
-	# Route the goal through the navmesh and glide along the path kinematically.
+	# Route the goal through the navmesh; walk it horizontally, feet planted.
 	# Turn inertia: the heading blends toward the path direction, so it can't
 	# whip around instantly — juking past it stays possible and earned.
 	if has_goal and _nav_map_ready():
 		_nav.target_position = goal
+		if debug_nav:
+			_debug_tick += 1
+			if _debug_tick % 120 == 0:
+				print("[NETTEST] agent state=%d pos=%v next=%v movedir=%v finished=%s" % [
+					_state, global_position,
+					_nav.get_next_path_position(), _move_dir, _nav.is_navigation_finished()])
 		if not _nav.is_navigation_finished():
 			var to := _nav.get_next_path_position() - global_position
+			to.y = 0.0  # horizontal walk; the feet find the floor below
 			if to.length() > 0.02:
 				var want := to.normalized()
-				var t := clampf(turn_rate * delta, 0.0, 1.0)
-				var blended := _move_dir.lerp(want, t)
-				_move_dir = want if blended.length() < 0.01 else blended.normalized()
+				if _move_dir.length() < 0.01:
+					_move_dir = want
+				else:
+					# Rotate the heading toward the path at turn_rate rad/s.
+					# (NOT lerp+normalize — that can never turn a full 180°.)
+					var angle := _move_dir.signed_angle_to(want, Vector3.UP)
+					var step := clampf(angle, -turn_rate * delta, turn_rate * delta)
+					_move_dir = _move_dir.rotated(Vector3.UP, step).normalized()
 				global_position += _move_dir * minf(speed * delta, to.length())
 		else:
 			_move_dir = Vector3.ZERO
 	else:
 		_move_dir = Vector3.ZERO
+
+	# Feet on the floor: snap to the surface underfoot each frame. On stairs
+	# this rides the treads step by step — it WALKS up and down, no floating.
+	var space := get_world_3d().direct_space_state
+	var query := PhysicsRayQueryParameters3D.create(
+		global_position + Vector3.UP * 1.2, global_position + Vector3.DOWN * 3.0)
+	var hit := space.intersect_ray(query)
+	if hit:
+		var floor_y: float = hit["position"].y + 0.4
+		global_position.y = lerpf(global_position.y, floor_y, clampf(14.0 * delta, 0.0, 1.0))
 
 func _flat_distance(to: Vector3) -> float:
 	var d := to - global_position

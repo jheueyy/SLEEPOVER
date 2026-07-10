@@ -349,8 +349,22 @@ func _on_lobby_ready(lobby_id: int, is_host: bool) -> void:
 			print("[NETTEST] client emitted noise ping"))
 		add_child(ping_timer)
 	elif lobby_id == -1 and is_host:
+		_monster.debug_nav = true
 		# ...and the host orders a round reset late in the test window.
 		get_tree().create_timer(20.0).timeout.connect(_reset)
+		# Diagnostic heartbeat: where is the monster and what is it thinking?
+		var diag := Timer.new()
+		diag.wait_time = 2.0
+		diag.autostart = true
+		diag.timeout.connect(func() -> void:
+			print("[NETTEST] monster at %v state=%d" % [_monster.global_position, _monster._state])
+			if not has_meta("path_printed"):
+				set_meta("path_printed", true)
+				var map := get_world_3d().navigation_map
+				var path := NavigationServer3D.map_get_path(
+					map, Vector3(0, 0.5, -3.5), Vector3(-5, 0.5, 1), true)
+				print("[NETTEST] dining->living path: %s" % str(path)))
+		add_child(diag)
 	_update_net_label()
 
 func _on_peer_connected(_pid: int) -> void:
