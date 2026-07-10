@@ -26,38 +26,47 @@ const SPAWNS: Array[Vector3] = [
 const MONSTER_SPAWN := Vector3(0.0, 1.0, -3.5)
 
 # ── Layout data ────────────────────────────────────────────────────────────
+# Ground: front door opens into the HALL (stairs up + walkway). Living room off
+# the hall by the entry; kitchen behind the living room; dining behind the hall;
+# pantry links dining to the laundry; garage is the full east strip with the
+# basement stairs in it (very suburban). Bath and laundry both open off the hall.
+# Upper: a corridor runs along the back so every bedroom opens onto shared
+# space — no walking through someone's room. Linen closet holds the chute.
 
 # Walls: a/b are plan endpoints, base = floor height, gaps = [pos_along_wall, width]
 const WALLS: Array = [
 	# Ground outer shell
 	{"a": Vector2(-8, -6), "b": Vector2(8, -6), "base": 0.0},
-	{"a": Vector2(-8, 6), "b": Vector2(8, 6), "base": 0.0, "gaps": [[-4.0, 1.2]]},  # front door
+	{"a": Vector2(-8, 6), "b": Vector2(8, 6), "base": 0.0, "gaps": [[0.5, 1.2]]},  # front door -> hall
 	{"a": Vector2(-8, -6), "b": Vector2(-8, 6), "base": 0.0},
 	{"a": Vector2(8, -6), "b": Vector2(8, 6), "base": 0.0},
 	# Ground interior
-	{"a": Vector2(-8, -1), "b": Vector2(8, -1), "base": 0.0, "gaps": [[-5.5, DOOR_W], [0.5, DOOR_W], [3.5, DOOR_W]]},
-	{"a": Vector2(-3, -6), "b": Vector2(-3, -1), "base": 0.0, "gaps": [[-3.5, DOOR_W]]},
-	{"a": Vector2(2, -6), "b": Vector2(2, -1), "base": 0.0, "gaps": [[-3.5, DOOR_W]]},
-	{"a": Vector2(-1, -1), "b": Vector2(-1, 6), "base": 0.0, "gaps": [[2.5, DOOR_W]]},
-	{"a": Vector2(2, -1), "b": Vector2(2, 6), "base": 0.0, "gaps": [[5.5, DOOR_W]]},
-	{"a": Vector2(5, -1), "b": Vector2(5, 6), "base": 0.0, "gaps": [[2.5, DOOR_W]]},
+	{"a": Vector2(-8, -1), "b": Vector2(5, -1), "base": 0.0, "gaps": [[-5.5, DOOR_W], [0.5, DOOR_W], [3.5, DOOR_W]]},  # kitchen|living, dining|hall, pantry|laundry
+	{"a": Vector2(-3, -6), "b": Vector2(-3, -1), "base": 0.0, "gaps": [[-3.5, DOOR_W]]},   # kitchen|dining
+	{"a": Vector2(2, -6), "b": Vector2(2, -1), "base": 0.0, "gaps": [[-3.5, DOOR_W]]},     # dining|pantry
+	{"a": Vector2(5, -6), "b": Vector2(5, 6), "base": 0.0, "gaps": [[-3.5, DOOR_W], [0.75, DOOR_W]]},  # pantry|garage, laundry|garage
+	{"a": Vector2(-1, -1), "b": Vector2(-1, 6), "base": 0.0, "gaps": [[5.5, DOOR_W]]},     # living|hall, door by the entry
+	{"a": Vector2(2, -1), "b": Vector2(2, 6), "base": 0.0, "gaps": [[0.5, DOOR_W], [4.5, DOOR_W]]},  # hall|laundry, hall|bath
+	{"a": Vector2(2, 2.5), "b": Vector2(5, 2.5), "base": 0.0},                             # laundry|bath divider
 	# Upper outer shell (garage is single-story: footprint stops at x=5)
 	{"a": Vector2(-8, -6), "b": Vector2(5, -6), "base": 3.0},
 	{"a": Vector2(-8, 6), "b": Vector2(5, 6), "base": 3.0},
 	{"a": Vector2(-8, -6), "b": Vector2(-8, 6), "base": 3.0},
 	{"a": Vector2(5, -6), "b": Vector2(5, 6), "base": 3.0},
-	# Upper interior
-	{"a": Vector2(-8, -1), "b": Vector2(5, -1), "base": 3.0, "gaps": [[-5.5, DOOR_W], [0.5, DOOR_W], [3.5, DOOR_W]]},
-	{"a": Vector2(-1, -1), "b": Vector2(-1, 6), "base": 3.0, "gaps": [[2.5, DOOR_W]]},
-	{"a": Vector2(-3, -6), "b": Vector2(-3, -1), "base": 3.0},
-	{"a": Vector2(2, -6), "b": Vector2(2, -1), "base": 3.0},
-	{"a": Vector2(2, -1), "b": Vector2(2, 6), "base": 3.0, "gaps": [[0.5, DOOR_W]]},
-	{"a": Vector2(2, 2), "b": Vector2(5, 2), "base": 3.0, "gaps": [[3.5, DOOR_W]]},
-	# Basement (under hall + laundry; sealed box, entered via the stair hole)
-	{"a": Vector2(-1, -1), "b": Vector2(5, -1), "base": -3.0},
-	{"a": Vector2(-1, 6), "b": Vector2(5, 6), "base": -3.0},
-	{"a": Vector2(-1, -1), "b": Vector2(-1, 6), "base": -3.0},
-	{"a": Vector2(5, -1), "b": Vector2(5, 6), "base": -3.0},
+	# Upper interior — corridor along z -1..0.5 connects everything
+	{"a": Vector2(-8, -1), "b": Vector2(5, -1), "base": 3.0, "gaps": [[-5.5, DOOR_W], [-1.5, DOOR_W], [3.5, DOOR_W]]},  # kid1, kid2, upbath -> corridor
+	{"a": Vector2(-8, 0.5), "b": Vector2(-1, 0.5), "base": 3.0, "gaps": [[-4.5, DOOR_W]]}, # master -> corridor
+	{"a": Vector2(2, 0.5), "b": Vector2(5, 0.5), "base": 3.0, "gaps": [[3.0, DOOR_W]]},    # closet -> corridor
+	{"a": Vector2(-1, 0.5), "b": Vector2(-1, 6), "base": 3.0, "gaps": [[3.0, DOOR_W]]},    # master|landing loop door
+	{"a": Vector2(2, 0.5), "b": Vector2(2, 6), "base": 3.0, "gaps": [[4.5, DOOR_W]]},      # landing -> office
+	{"a": Vector2(2, 2), "b": Vector2(5, 2), "base": 3.0},                                 # closet|office divider
+	{"a": Vector2(-3, -6), "b": Vector2(-3, -1), "base": 3.0},                             # kid1|kid2
+	{"a": Vector2(2, -6), "b": Vector2(2, -1), "base": 3.0},                               # kid2|upbath
+	# Basement (under the garage; sealed box, entered via the garage stair hole)
+	{"a": Vector2(5, -6), "b": Vector2(8, -6), "base": -3.0},
+	{"a": Vector2(5, -1), "b": Vector2(8, -1), "base": -3.0},
+	{"a": Vector2(5, -6), "b": Vector2(5, -1), "base": -3.0},
+	{"a": Vector2(8, -6), "b": Vector2(8, -1), "base": -3.0},
 	# Attic (low walls, over the upper back row)
 	{"a": Vector2(-8, -6), "b": Vector2(2, -6), "base": 6.0, "h": 2.2},
 	{"a": Vector2(-8, -1), "b": Vector2(2, -1), "base": 6.0, "h": 2.2},
@@ -70,32 +79,32 @@ const WALLS: Array = [
 const SLABS: Array = [
 	# Yard (slightly below ground floor so nobody falls into the void)
 	{"rect": [-12.0, -9.0, 12.0, 9.0], "top": -0.05},
-	# Ground floor — hole at x 1..2, z 0..5 (basement stairwell)
-	{"rect": [-8.0, -6.0, 1.0, 6.0], "top": 0.0},
-	{"rect": [1.0, -6.0, 2.0, 0.0], "top": 0.0},
-	{"rect": [1.0, 5.0, 2.0, 6.0], "top": 0.0},
-	{"rect": [2.0, -6.0, 8.0, 6.0], "top": 0.0},
-	# Upper floor — holes: main stairwell x -1..1 z 0..5, chute x 3..4 z 0..1
+	# Ground floor — hole at x 6.5..7.5, z -5..-1 (basement stairwell, in garage)
+	{"rect": [-8.0, -6.0, 6.5, 6.0], "top": 0.0},
+	{"rect": [6.5, -6.0, 7.5, -5.0], "top": 0.0},
+	{"rect": [6.5, -1.0, 7.5, 6.0], "top": 0.0},
+	{"rect": [7.5, -6.0, 8.0, 6.0], "top": 0.0},
+	# Upper floor — holes: main stairwell x -1..0.5 z 0..5, chute x 3..4 z 1..2
 	{"rect": [-8.0, -6.0, -1.0, 6.0], "top": 3.0},
-	{"rect": [-1.0, -6.0, 1.0, 0.0], "top": 3.0},
-	{"rect": [-1.0, 5.0, 1.0, 6.0], "top": 3.0},
-	{"rect": [1.0, -6.0, 3.0, 6.0], "top": 3.0},
-	{"rect": [3.0, -6.0, 5.0, 0.0], "top": 3.0},
-	{"rect": [4.0, 0.0, 5.0, 1.0], "top": 3.0},
-	{"rect": [3.0, 1.0, 5.0, 6.0], "top": 3.0},
+	{"rect": [-1.0, -6.0, 0.5, 0.0], "top": 3.0},
+	{"rect": [-1.0, 5.0, 0.5, 6.0], "top": 3.0},
+	{"rect": [0.5, -6.0, 3.0, 6.0], "top": 3.0},
+	{"rect": [3.0, -6.0, 5.0, 1.0], "top": 3.0},
+	{"rect": [4.0, 1.0, 5.0, 2.0], "top": 3.0},
+	{"rect": [3.0, 2.0, 5.0, 6.0], "top": 3.0},
 	# Attic floor — hole at x -3..-2, z -5..-1 (attic stairwell)
 	{"rect": [-8.0, -6.0, -3.0, -1.0], "top": 6.0},
 	{"rect": [-3.0, -6.0, -2.0, -5.0], "top": 6.0},
 	{"rect": [-2.0, -6.0, 2.0, -1.0], "top": 6.0},
-	# Basement floor
-	{"rect": [-1.0, -1.0, 5.0, 6.0], "top": -3.0},
+	# Basement floor (under the garage)
+	{"rect": [5.0, -6.0, 8.0, -1.0], "top": -3.0},
 ]
 
 # Stairs: start = plan pos of the first step's near edge center; dir = plan
 # direction of climb; base = y of the floor you start from; signed rise.
 const STAIRS: Array = [
-	{"start": Vector2(0.0, 0.0), "dir": Vector2(0, 1), "base": 0.0, "rise": 0.3, "run": 0.5, "steps": 10, "width": 2.0},   # hall -> upper
-	{"start": Vector2(1.5, 0.0), "dir": Vector2(0, 1), "base": 0.0, "rise": -0.3, "run": 0.5, "steps": 10, "width": 1.0},  # hall -> basement
+	{"start": Vector2(-0.25, 0.0), "dir": Vector2(0, 1), "base": 0.0, "rise": 0.3, "run": 0.5, "steps": 10, "width": 1.5},  # hall -> upper (walkway stays beside it)
+	{"start": Vector2(7.0, -1.0), "dir": Vector2(0, -1), "base": 0.0, "rise": -0.3, "run": 0.4, "steps": 10, "width": 1.0}, # garage -> basement (steep)
 	{"start": Vector2(-2.5, -1.0), "dir": Vector2(0, -1), "base": 3.0, "rise": 0.3, "run": 0.4, "steps": 10, "width": 1.0}, # kid2 -> attic (steep!)
 ]
 
@@ -104,18 +113,19 @@ const ROOMS: Array = [
 	{"name": "LIVING ROOM", "at": Vector3(-4.5, 2.2, 2.5)},
 	{"name": "KITCHEN", "at": Vector3(-5.5, 2.2, -3.5)},
 	{"name": "DINING", "at": Vector3(-0.5, 2.2, -3.5)},
-	{"name": "GARAGE", "at": Vector3(5.0, 2.2, -3.5)},
+	{"name": "PANTRY", "at": Vector3(3.5, 2.2, -3.5)},
+	{"name": "GARAGE", "at": Vector3(6.5, 2.2, 0.0)},
 	{"name": "HALL", "at": Vector3(0.5, 2.2, 5.3)},
-	{"name": "LAUNDRY", "at": Vector3(3.5, 2.2, 4.0)},
-	{"name": "BATH", "at": Vector3(6.5, 2.2, 2.5)},
-	{"name": "MASTER BED", "at": Vector3(-4.5, 5.2, 2.5)},
+	{"name": "LAUNDRY", "at": Vector3(3.5, 2.2, 0.75)},
+	{"name": "BATH", "at": Vector3(3.5, 2.2, 4.25)},
+	{"name": "MASTER BED", "at": Vector3(-4.5, 5.2, 3.5)},
 	{"name": "LANDING", "at": Vector3(0.5, 5.2, 5.3)},
-	{"name": "CLOSET (CHUTE!)", "at": Vector3(3.5, 5.2, 0.5)},
+	{"name": "CLOSET (CHUTE!)", "at": Vector3(3.5, 5.2, 1.25)},
 	{"name": "OFFICE", "at": Vector3(3.5, 5.2, 4.0)},
 	{"name": "KID ROOM 1", "at": Vector3(-5.5, 5.2, -3.5)},
 	{"name": "KID ROOM 2", "at": Vector3(-0.5, 5.2, -3.5)},
 	{"name": "UP BATH", "at": Vector3(3.5, 5.2, -3.5)},
-	{"name": "BASEMENT", "at": Vector3(2.0, -0.8, 2.5)},
+	{"name": "BASEMENT", "at": Vector3(6.5, -0.8, -3.5)},
 	{"name": "ATTIC", "at": Vector3(-3.0, 7.4, -3.5)},
 ]
 
@@ -142,8 +152,8 @@ static func build(parent: Node3D) -> void:
 		_build_stairs(parent, stair)
 
 	# Chute rim: a glowing lip around the closet hole so it reads as a feature.
-	for rim: Array in [[3.5, -0.05], [3.5, 1.05], [2.95, 0.5], [4.05, 0.5]]:
-		var along_x: bool = absf(rim[1] - 0.5) > 0.3
+	for rim: Array in [[3.5, 0.95], [3.5, 2.05], [2.95, 1.5], [4.05, 1.5]]:
+		var along_x: bool = absf(rim[1] - 1.5) > 0.3
 		_box(parent, Vector3(rim[0], 3.1, rim[1]),
 			Vector3(1.2 if along_x else 0.1, 0.2, 0.1 if along_x else 1.2),
 			COL_CHUTE, true)

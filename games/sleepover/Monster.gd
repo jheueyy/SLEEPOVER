@@ -8,13 +8,13 @@ class_name NoiseMonster
 ##                 when a ping happens close to it, or it gets near enough while
 ##                 investigating. Going silent does NOT break a chase — it only
 ##                 gives up after `chase_memory` secs without any contact.
-## Movement is navmesh-routed (baked by Main from the house gray-box): it walks
-## through doorways, up stairs, and across floors. Along a path it GLIDES —
-## velocity follows the path in 3D — which reads uncanny in exactly the right
-## way. Touch the player = caught (Main handles the freeze).
+## Movement is navmesh-routed (baked by Main from the house gray-box) and the
+## body has NO world collision — it glides kinematically along the path, so
+## doorways, stairs, and floor changes can never physically block it. The
+## navmesh IS its physics. Reads uncanny in exactly the right way.
+## Touch the player = caught (Main's distance check handles the freeze).
 
 @export var move_speed: float = 2.6        ## faster than shuffle, loses to a hop chain
-@export var gravity: float = 12.0
 @export var hearing_radius: float = 40.0   ## ignore pings farther than this
 @export var patrol_span: float = 6.0       ## idle back-and-forth distance
 @export var chase_trigger_range: float = 6.0 ## ping this close to it = instant chase
@@ -37,13 +37,13 @@ var _patrol_origin: Vector3
 var _patrol_dir: float = 1.0
 var _spawn: Transform3D
 var _nav: NavigationAgent3D
+var _move_dir: Vector3 = Vector3.ZERO  ## smoothed heading along the nav path
 
 func _ready() -> void:
-	var shape := CollisionShape3D.new()
-	var box := BoxShape3D.new()
-	box.size = Vector3(0.8, 0.8, 0.8)  # fits through the 1.1m doorways
-	shape.shape = box
-	add_child(shape)
+	# No collision shape and no layers: the world can't stop it, only the
+	# navmesh path decides where it goes. Catching is a distance check in Main.
+	collision_layer = 0
+	collision_mask = 0
 
 	var mesh := MeshInstance3D.new()
 	var box_mesh := BoxMesh.new()
@@ -73,7 +73,7 @@ func respawn() -> void:
 	_has_target = false
 	_state = State.PATROL
 	_chase_timer = 0.0
-	velocity = Vector3.ZERO
+	_move_dir = Vector3.ZERO
 
 func _on_noise(pos: Vector3, loudness: float) -> void:
 	if loudness <= 0.0:
@@ -141,25 +141,23 @@ func _physics_process(delta: float) -> void:
 			if _chase_timer <= 0.0:
 				_state = State.INVESTIGATE  # lost you — check last known noise
 
-	# Route the goal through the navmesh (doorways, stairs, floors).
-	var desired := Vector3.ZERO
+	# Route the goal through the navmesh and glide along the path kinematically.
+	# Turn inertia: the heading blends toward the path direction, so it can't
+	# whip around instantly — juking past it stays possible and earned.
 	if has_goal and _nav_map_ready():
 		_nav.target_position = goal
 		if not _nav.is_navigation_finished():
 			var to := _nav.get_next_path_position() - global_position
-			if to.length() > 0.05:
-				desired = to.normalized() * speed
-
-	# Turn inertia: it can't whip around instantly. Committed momentum is what
-	# makes juking past it possible — and what makes near-misses feel earned.
-	var t := clampf(turn_rate * delta, 0.0, 1.0)
-	velocity.x = lerpf(velocity.x, desired.x, t)
-	velocity.z = lerpf(velocity.z, desired.z, t)
-	if desired == Vector3.ZERO:
-		velocity.y -= gravity * delta  # idle: stay planted on the floor
+			if to.length() > 0.02:
+				var want := to.normalized()
+				var t := clampf(turn_rate * delta, 0.0, 1.0)
+				var blended := _move_dir.lerp(want, t)
+				_move_dir = want if blended.length() < 0.01 else blended.normalized()
+				global_position += _move_dir * minf(speed * delta, to.length())
+		else:
+			_move_dir = Vector3.ZERO
 	else:
-		velocity.y = desired.y         # on a path: glide along it (stairs etc.)
-	move_and_slide()
+		_move_dir = Vector3.ZERO
 
 func _flat_distance(to: Vector3) -> float:
 	var d := to - global_position

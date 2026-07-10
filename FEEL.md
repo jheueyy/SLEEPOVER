@@ -79,16 +79,16 @@ engine works.
 | `turn_rate` | 2.5 | how fast it changes direction | lower = more committed = jukeable; raise if dodging feels free |
 | `track_interval` | 0.4 | secs between position snapshots in CHASE | it aims where you WERE — raise to make sidesteps stronger |
 | `patrol_span` | 6.0 | idle wander distance | cosmetic for the kill test |
-| `gravity` | 12.0 | keeps it on the floor | leave alone |
 
 > Chase rules: once it's locked on it tracks your LIVE position — going silent
 > does not break a chase. Any ping (or getting within `proximity_sense`)
 > refreshes its memory; it only gives up after `chase_memory` secs of zero
 > contact, then checks your last known position before returning to patrol.
 >
-> Movement is navmesh-routed (baked from the gray-box at startup): it hunts
-> through doorways, up stairs, and across all four floors, gliding along the
-> path. It spawns in the DINING ROOM and wanders there until it hears you.
+> Movement is navmesh-routed (baked from the gray-box at startup) and the body
+> has NO world collision — it glides kinematically along the path, so doorways,
+> stairs, and floor changes can never physically block it. It spawns in the
+> DINING ROOM and wanders there until it hears you.
 
 ---
 

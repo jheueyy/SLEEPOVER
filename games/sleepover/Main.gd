@@ -339,14 +339,18 @@ func _on_lobby_ready(lobby_id: int, is_host: bool) -> void:
 		_player.global_position = HouseSuburban.SPAWNS[slot]
 		_player.set_spawn(_player.global_transform)
 	if lobby_id == -1 and not is_host:
-		# ENet loopback test mode: fire an automated noise ping so the
-		# noise-forwarding and catch RPCs get exercised without input.
-		get_tree().create_timer(2.0).timeout.connect(func() -> void:
+		# ENet loopback test mode: ping every few seconds like a hopping player
+		# so noise-forwarding, the cross-house hunt, and the catch RPC all run.
+		var ping_timer := Timer.new()
+		ping_timer.wait_time = 3.0
+		ping_timer.autostart = true
+		ping_timer.timeout.connect(func() -> void:
 			NoiseBus.emit_noise(_player.global_position, 1.0)
 			print("[NETTEST] client emitted noise ping"))
+		add_child(ping_timer)
 	elif lobby_id == -1 and is_host:
 		# ...and the host orders a round reset late in the test window.
-		get_tree().create_timer(10.0).timeout.connect(_reset)
+		get_tree().create_timer(20.0).timeout.connect(_reset)
 	_update_net_label()
 
 func _on_peer_connected(_pid: int) -> void:
