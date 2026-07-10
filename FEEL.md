@@ -75,15 +75,23 @@ engine works.
 | `hearing_radius` | 40.0 | how far a noise ping reaches it | shrink to make the house feel bigger |
 | `chase_trigger_range` | 6.0 | ping this close to it = instant CHASE | distant noise only gets investigated |
 | `proximity_sense` | 3.5 | it just *knows* you're there this close | escalates an investigate into a chase |
-| `chase_memory` | 6.0 | secs of no contact before it loses you | THE near-miss lever — spec wants ~60% of chases to end in escape; raise = deadlier |
+| `chase_memory` | 10.0 | secs of no contact before it loses you | was 6 — house has too many corners, escapes were free |
+| `sight_range` | 7.0 | sees MOVING players this far ahead | short on purpose — hearing stays the main sense |
+| `sight_fov_deg` | 120.0 | vision cone around its heading | it only sees where it's going |
+| `sight_min_speed` | 0.6 | move slower than this = invisible | **FREEZE to hide** — the "don't. move." mechanic |
 | `turn_rate` | 2.5 | how fast it changes direction | lower = more committed = jukeable; raise if dodging feels free |
 | `track_interval` | 0.4 | secs between position snapshots in CHASE | it aims where you WERE — raise to make sidesteps stronger |
 | `patrol_span` | 6.0 | idle wander distance | cosmetic for the kill test |
 
 > Chase rules: once it's locked on it tracks your LIVE position — going silent
-> does not break a chase. Any ping (or getting within `proximity_sense`)
-> refreshes its memory; it only gives up after `chase_memory` secs of zero
-> contact, then checks your last known position before returning to patrol.
+> does not break a chase. Any ping, getting within `proximity_sense`, or being
+> SEEN moving refreshes its memory; it only gives up after `chase_memory` secs
+> of zero contact, then checks your last known position before returning to
+> patrol.
+>
+> Sight is deliberately weaker than hearing (spec: hunts by noise, not sight
+> cones): short range, only in its heading direction, walls block it, and it
+> ONLY detects movement — holding still renders you invisible even in the open.
 >
 > Movement is navmesh-routed (baked from the gray-box at startup) and the body
 > has NO world collision — geometry can never block or snag it. It walks the

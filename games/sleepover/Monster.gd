@@ -20,7 +20,10 @@ class_name NoiseMonster
 @export var patrol_span: float = 6.0       ## idle back-and-forth distance
 @export var chase_trigger_range: float = 6.0 ## ping this close to it = instant chase
 @export var proximity_sense: float = 3.5   ## it just KNOWS you're there this close
-@export var chase_memory: float = 6.0      ## secs of silence before it loses you
+@export var chase_memory: float = 10.0     ## secs of no contact before it loses you
+@export var sight_range: float = 7.0       ## it SEES moving players this far ahead
+@export var sight_fov_deg: float = 120.0   ## vision cone around its heading
+@export var sight_min_speed: float = 0.6   ## slower than this = invisible. FREEZE to hide.
 @export var turn_rate: float = 2.5         ## heading turn speed in rad/s (~143°/s) — lower = more committed, easier to juke
 @export var track_interval: float = 0.4    ## secs between "where are they now" checks — it aims where you WERE
 
@@ -40,6 +43,8 @@ var debug_nav: bool = false        ## loopback test mode: dump agent state
 var _spawn: Transform3D
 var _nav: NavigationAgent3D
 var _move_dir: Vector3 = Vector3.ZERO  ## smoothed heading along the nav path
+var _watched: Node3D               ## whose motion we measured last frame
+var _watched_prev: Vector3
 var _debug_tick: int = 0
 
 func _ready() -> void:
@@ -99,6 +104,14 @@ func _physics_process(delta: float) -> void:
 	var goal := global_position
 	var has_goal := false
 	var speed := move_speed
+
+	# Sight: a MOVING player in front of it, close, with clear line of sight,
+	# is spotted — enters or refreshes the chase. Freeze and you're invisible.
+	if player != null and _can_see_player(delta):
+		_state = State.CHASE
+		_chase_timer = chase_memory
+		_tracked_pos = player.global_position
+		_track_cd = track_interval
 
 	match _state:
 		State.PATROL:
@@ -183,6 +196,36 @@ func _physics_process(delta: float) -> void:
 	if hit:
 		var floor_y: float = hit["position"].y + 0.4
 		global_position.y = lerpf(global_position.y, floor_y, clampf(14.0 * delta, 0.0, 1.0))
+
+func _can_see_player(delta: float) -> bool:
+	# Measure the target's speed from position deltas (works for the local
+	# RigidBody bag AND the interpolated network ghosts alike).
+	var pos := player.global_position
+	if _watched != player:
+		_watched = player
+		_watched_prev = pos
+		return false
+	var target_speed := (pos - _watched_prev).length() / delta
+	_watched_prev = pos
+	if target_speed < sight_min_speed:
+		return false  # holding still = invisible
+
+	var to := pos - global_position
+	if to.length() > sight_range:
+		return false
+	if _move_dir.length() < 0.1:
+		return false  # standing idle, staring at nothing
+	var flat := Vector3(to.x, 0.0, to.z).normalized()
+	if flat.dot(_move_dir) < cos(deg_to_rad(sight_fov_deg * 0.5)):
+		return false  # outside the vision cone
+
+	# Line of sight: walls block it. Ray ends at the player, so hitting the
+	# player's own body (or nothing at all, for ghosts) means a clear view.
+	var space := get_world_3d().direct_space_state
+	var query := PhysicsRayQueryParameters3D.create(
+		global_position + Vector3.UP * 0.3, pos + Vector3.UP * 0.3)
+	var hit := space.intersect_ray(query)
+	return hit.is_empty() or hit["collider"] == player
 
 func _flat_distance(to: Vector3) -> float:
 	var d := to - global_position
