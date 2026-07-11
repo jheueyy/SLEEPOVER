@@ -101,6 +101,7 @@ func _build_level() -> void:
 	nm.agent_max_climb = 0.4      # stair steps rise 0.3; must survive voxel floor
 	nm.cell_size = 0.2            # matches navigation/3d defaults in project.godot
 	nm.cell_height = 0.2
+	nm.geometry_collision_mask = 1  # bake real geometry only, not player stair ramps
 	nav_region.navigation_mesh = nm
 	nav_region.bake_navigation_mesh(false)  # synchronous — one beat at startup
 

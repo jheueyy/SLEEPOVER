@@ -113,6 +113,13 @@ engine works.
 too fast). Heights stay 1:1, so the scale also made stairs shallower (rise 0.3,
 run 0.7) and doors wider (~1.5m). Raise/lower S to resize the entire house.
 
+## Stairs & verbs
+Every staircase has an invisible ramp collider (layer 2, players only) so bags
+can SHUFFLE up and down stairs — slowly, thanks to the slope fighting gravity.
+Hopping remains the fast way up; hopping DOWN at speed still tumble-chains.
+The monster ignores the ramps entirely (rays + navmesh masked to layer 1) and
+keeps walking the real treads. Chases continue across floors either way.
+
 ## The speed ladder (keep this ordering true while tuning!)
 ```
 shuffle_speed (2.0)  <  monster.move_speed (2.6)  <  hop-chain pace (~3.6 bursts)

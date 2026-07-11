@@ -232,6 +232,34 @@ static func _build_stairs(parent: Node3D, stair: Dictionary) -> void:
 				run if absf(dir.y) > 0.5 else width),
 			COL_STEP_A if i % 2 == 0 else COL_STEP_B)
 
+	# Invisible ramp over the treads so bags can SHUFFLE up and down stairs —
+	# hopping stays the fast option, but a chase no longer dies at the bottom
+	# step when the tank is empty. Layer 2: players collide with it; the
+	# monster's rays and the navmesh bake (mask 1) ignore it and keep walking
+	# the real treads.
+	var fwd := Vector3(dir.x, 0.0, dir.y)
+	var total_rise := rise * steps
+	var bottom: Vector3
+	var top_end: Vector3
+	if rise > 0.0:
+		# Ride the step-nose line: starts one run early so it meets the floor.
+		bottom = Vector3(start.x, base, start.y) - fwd * run
+		top_end = Vector3(start.x, base + total_rise, start.y) + fwd * (run * (steps - 1))
+	else:
+		bottom = Vector3(start.x, base, start.y)
+		top_end = Vector3(start.x, base + total_rise, start.y) + fwd * (run * steps)
+	var ramp := StaticBody3D.new()
+	ramp.collision_layer = 2
+	ramp.collision_mask = 0
+	var rshape := CollisionShape3D.new()
+	var rbox := BoxShape3D.new()
+	rbox.size = Vector3(width, 0.12, bottom.distance_to(top_end) + 0.3)
+	rshape.shape = rbox
+	ramp.add_child(rshape)
+	parent.add_child(ramp)
+	var center := (bottom + top_end) * 0.5 - Vector3.UP * 0.06
+	ramp.look_at_from_position(center, top_end, Vector3.UP)
+
 static func _box(parent: Node3D, center: Vector3, size: Vector3,
 		color: Color, unshaded: bool = false) -> void:
 	var body := StaticBody3D.new()

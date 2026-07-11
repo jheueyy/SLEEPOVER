@@ -70,6 +70,7 @@ func _ready() -> void:
 	mass = 2.0
 	continuous_cd = true
 	can_sleep = false
+	collision_mask = 0b11  # world (1) + invisible stair ramps (2)
 
 	var shape := CollisionShape3D.new()
 	var capsule := CapsuleShape3D.new()

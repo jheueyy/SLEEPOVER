@@ -189,9 +189,10 @@ func _physics_process(delta: float) -> void:
 
 	# Feet on the floor: snap to the surface underfoot each frame. On stairs
 	# this rides the treads step by step — it WALKS up and down, no floating.
+	# (mask 1: snaps to real geometry, never the invisible player stair ramps)
 	var space := get_world_3d().direct_space_state
 	var query := PhysicsRayQueryParameters3D.create(
-		global_position + Vector3.UP * 1.2, global_position + Vector3.DOWN * 3.0)
+		global_position + Vector3.UP * 1.2, global_position + Vector3.DOWN * 3.0, 1)
 	var hit := space.intersect_ray(query)
 	if hit:
 		var floor_y: float = hit["position"].y + 0.4
@@ -223,7 +224,7 @@ func _can_see_player(delta: float) -> bool:
 	# player's own body (or nothing at all, for ghosts) means a clear view.
 	var space := get_world_3d().direct_space_state
 	var query := PhysicsRayQueryParameters3D.create(
-		global_position + Vector3.UP * 0.3, pos + Vector3.UP * 0.3)
+		global_position + Vector3.UP * 0.3, pos + Vector3.UP * 0.3, 1)  # mask 1: ignore stair ramps
 	var hit := space.intersect_ray(query)
 	return hit.is_empty() or hit["collider"] == player
 
