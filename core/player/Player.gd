@@ -61,7 +61,7 @@ var _hop_queued: bool = false
 var _was_grounded: bool = true
 var _spawn_grace: float = 0.0  ## suppress landing noise right after (re)spawn
 
-var _ground_ray: RayCast3D
+var _ground_rays: Array[RayCast3D] = []
 var _mesh: MeshInstance3D
 var _spawn: Transform3D
 
@@ -88,10 +88,16 @@ func _ready() -> void:
 	_mesh.set_surface_override_material(0, mat)
 	add_child(_mesh)
 
-	_ground_ray = RayCast3D.new()
-	_ground_ray.target_position = Vector3(0.0, -0.8, 0.0)
-	_ground_ray.enabled = true
-	add_child(_ground_ray)
+	# Five ground rays (center + 4 offsets): a single center ray misses when
+	# the bag bridges two stair treads, which blocked hopping on staircases.
+	for off: Vector2 in [Vector2.ZERO, Vector2(0.25, 0), Vector2(-0.25, 0),
+			Vector2(0, 0.25), Vector2(0, -0.25)]:
+		var ray := RayCast3D.new()
+		ray.position = Vector3(off.x, 0.0, off.y)
+		ray.target_position = Vector3(0.0, -1.0, 0.0)
+		ray.enabled = true
+		add_child(ray)
+		_ground_rays.append(ray)
 
 	stamina = stamina_max
 	_spawn_grace = 1.0
@@ -143,7 +149,11 @@ func _unhandled_input(event: InputEvent) -> void:
 # ── Physics ────────────────────────────────────────────────────────────────
 
 func _physics_process(delta: float) -> void:
-	grounded = _ground_ray.is_colliding()
+	grounded = false
+	for ray: RayCast3D in _ground_rays:
+		if ray.is_colliding():
+			grounded = true
+			break
 
 	match state:
 		State.CAUGHT:
@@ -184,9 +194,10 @@ func _process_normal(delta: float) -> void:
 			apply_central_force(dir * shuffle_force)
 
 	# Hop: tap Space. Full pip = burst. Empty tank = face-plant. That's the game.
+	# (velocity gate: the longer rays still see ground early in a hop's ascent)
 	if _hop_queued:
 		_hop_queued = false
-		if grounded:
+		if grounded and linear_velocity.y < 1.5:
 			if stamina >= 1.0:
 				_launch_hop(dir if dir != Vector3.ZERO else facing)
 			else:

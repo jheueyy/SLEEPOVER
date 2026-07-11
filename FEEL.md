@@ -107,6 +107,12 @@ engine works.
 
 ---
 
+## House scale
+`HouseSuburban.S = 1.4` — the whole floor plan is scaled 1.4x at build time
+(playtest 2026-07-09: rooms too small, corridors too tight, chases resolved
+too fast). Heights stay 1:1, so the scale also made stairs shallower (rise 0.3,
+run 0.7) and doors wider (~1.5m). Raise/lower S to resize the entire house.
+
 ## The speed ladder (keep this ordering true while tuning!)
 ```
 shuffle_speed (2.0)  <  monster.move_speed (2.6)  <  hop-chain pace (~3.6 bursts)

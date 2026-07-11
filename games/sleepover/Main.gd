@@ -112,7 +112,7 @@ func _spawn_actors() -> void:
 	_monster = NoiseMonster.new()
 	_monster.position = HouseSuburban.MONSTER_SPAWN
 	_monster.player = _player
-	_monster.patrol_span = 2.0  # wanders its room; navmesh handles the rest
+	_monster.patrol_span = 2.8  # wanders its (scaled-up) room; navmesh handles the rest
 	add_child(_monster)
 
 	# Floating aim arrow so you can read your heading (the bag itself tumbles).

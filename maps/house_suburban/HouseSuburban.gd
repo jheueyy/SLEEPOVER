@@ -14,16 +14,23 @@ extends Object
 const WALL_T := 0.3
 const WALL_H := 3.0
 const DOOR_H := 2.0
-const DOOR_W := 1.1  # wide enough for the navmesh (agent radius 0.35) to pass
+const DOOR_W := 1.1  # pre-scale; S widens doors along with everything else
+
+# Plan scale: all x/z layout data below is authored on the original 16x12
+# grid and multiplied by S at build time. Raised after playtest feedback
+# ("rooms too small, corridors too tight") — heights stay 1:1, so stairs
+# also get shallower and easier to hop.
+const S := 1.4
 
 # Where players wake up (living room). Slot 0 = host/solo, clients pick 1+.
+# (Already in world units — these are consts, so they're pre-scaled by hand.)
 const SPAWNS: Array[Vector3] = [
-	Vector3(-5.0, 1.0, 1.0), Vector3(-3.5, 1.0, 1.5), Vector3(-6.0, 1.0, 2.5),
-	Vector3(-3.5, 1.0, 3.0), Vector3(-5.0, 1.0, 4.0), Vector3(-6.5, 1.0, 3.8),
+	Vector3(-7.0, 1.0, 1.4), Vector3(-4.9, 1.0, 2.1), Vector3(-8.4, 1.0, 3.5),
+	Vector3(-4.9, 1.0, 4.2), Vector3(-7.0, 1.0, 5.6), Vector3(-9.1, 1.0, 5.3),
 ]
 # Dining room — with navmesh it hunts through the whole house, so it starts
 # a couple of doorways away from the sleeping players.
-const MONSTER_SPAWN := Vector3(0.0, 1.0, -3.5)
+const MONSTER_SPAWN := Vector3(0.0, 1.0, -4.9)
 
 # ── Layout data ────────────────────────────────────────────────────────────
 # Ground: front door opens into the HALL (stairs up + walkway). Living room off
@@ -142,8 +149,8 @@ static func build(parent: Node3D) -> void:
 		var r: Array = slab["rect"]
 		var top: float = slab["top"]
 		_box(parent,
-			Vector3((r[0] + r[2]) * 0.5, top - 0.15, (r[1] + r[3]) * 0.5),
-			Vector3(r[2] - r[0], 0.3, r[3] - r[1]), COL_FLOOR)
+			Vector3((r[0] + r[2]) * 0.5 * S, top - 0.15, (r[1] + r[3]) * 0.5 * S),
+			Vector3((r[2] - r[0]) * S, 0.3, (r[3] - r[1]) * S), COL_FLOOR)
 
 	for wall: Dictionary in WALLS:
 		_build_wall(parent, wall)
@@ -154,8 +161,8 @@ static func build(parent: Node3D) -> void:
 	# Chute rim: a glowing lip around the closet hole so it reads as a feature.
 	for rim: Array in [[3.5, 0.95], [3.5, 2.05], [2.95, 1.5], [4.05, 1.5]]:
 		var along_x: bool = absf(rim[1] - 1.5) > 0.3
-		_box(parent, Vector3(rim[0], 3.1, rim[1]),
-			Vector3(1.2 if along_x else 0.1, 0.2, 0.1 if along_x else 1.2),
+		_box(parent, Vector3(rim[0] * S, 3.1, rim[1] * S),
+			Vector3(1.2 * S if along_x else 0.1, 0.2, 0.1 if along_x else 1.2 * S),
 			COL_CHUTE, true)
 
 	for room: Dictionary in ROOMS:
@@ -164,7 +171,8 @@ static func build(parent: Node3D) -> void:
 		label.font_size = 72
 		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		label.modulate = Color(1, 1, 1, 0.5)
-		label.position = room["at"]
+		var at: Vector3 = room["at"]
+		label.position = Vector3(at.x * S, at.y, at.z * S)
 		parent.add_child(label)
 
 static func _build_wall(parent: Node3D, wall: Dictionary) -> void:
@@ -174,17 +182,17 @@ static func _build_wall(parent: Node3D, wall: Dictionary) -> void:
 	var h: float = wall.get("h", WALL_H)
 	var gaps: Array = wall.get("gaps", [])
 	var along_x := absf(b.y - a.y) < 0.01  # wall runs along the x axis
-	var lo := minf(a.x, b.x) if along_x else minf(a.y, b.y)
-	var hi := maxf(a.x, b.x) if along_x else maxf(a.y, b.y)
-	var cross := a.y if along_x else a.x
+	var lo := (minf(a.x, b.x) if along_x else minf(a.y, b.y)) * S
+	var hi := (maxf(a.x, b.x) if along_x else maxf(a.y, b.y)) * S
+	var cross := (a.y if along_x else a.x) * S
 
 	var sorted_gaps := gaps.duplicate()
 	sorted_gaps.sort_custom(func(g1: Array, g2: Array) -> bool: return g1[0] < g2[0])
 
 	var cursor := lo
 	for gap: Array in sorted_gaps:
-		var g_lo: float = gap[0] - gap[1] * 0.5
-		var g_hi: float = gap[0] + gap[1] * 0.5
+		var g_lo: float = (gap[0] - gap[1] * 0.5) * S
+		var g_hi: float = (gap[0] + gap[1] * 0.5) * S
 		if g_lo - cursor > 0.05:
 			_wall_seg(parent, cursor, g_lo, cross, base, base + h, along_x)
 		# Lintel above the doorway.
@@ -207,13 +215,13 @@ static func _wall_seg(parent: Node3D, lo: float, hi: float, cross: float,
 	_box(parent, center, size, COL_WALL)
 
 static func _build_stairs(parent: Node3D, stair: Dictionary) -> void:
-	var start: Vector2 = stair["start"]
+	var start: Vector2 = stair["start"] * S
 	var dir: Vector2 = stair["dir"]
 	var base: float = stair["base"]
 	var rise: float = stair["rise"]
-	var run: float = stair["run"]
+	var run: float = stair["run"] * S   # plan scales, rise doesn't: shallower stairs
 	var steps: int = stair["steps"]
-	var width: float = stair["width"]
+	var width: float = stair["width"] * S
 	for i in range(steps):
 		var plan := start + dir * (run * (i + 0.5))
 		var top := base + rise * (i + 1) if rise > 0.0 else base + rise * i
