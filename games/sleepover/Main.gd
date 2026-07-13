@@ -339,6 +339,8 @@ func _on_lobby_ready(lobby_id: int, is_host: bool) -> void:
 		var slot := 1 + (multiplayer.get_unique_id() % (HouseSuburban.SPAWNS.size() - 1))
 		_player.global_position = HouseSuburban.SPAWNS[slot]
 		_player.set_spawn(_player.global_transform)
+		# Our real peer id exists only now — wear the matching bag skin.
+		_player.set_skin(BagVisual.skin_for_peer(multiplayer.get_unique_id()))
 	if lobby_id == -1 and not is_host:
 		# ENet loopback test mode: ping every few seconds like a hopping player
 		# so noise-forwarding, the cross-house hunt, and the catch RPC all run.
@@ -379,17 +381,11 @@ func _on_peer_disconnected(pid: int) -> void:
 	_update_net_label()
 
 func _spawn_remote_bag(pid: int) -> Node3D:
-	# A ghost: same silhouette, different color, no physics — pure display.
+	# A ghost: the peer's actual bag skin, no physics — pure display.
 	var ghost := Node3D.new()
-	var mesh := MeshInstance3D.new()
-	var capsule := CapsuleMesh.new()
-	capsule.radius = 0.35
-	capsule.height = 1.3
-	mesh.mesh = capsule
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(1.0, 0.55, 0.15)  # orange vs your cyan
-	mesh.set_surface_override_material(0, mat)
-	ghost.add_child(mesh)
+	var bag := BagVisual.build(0.9, BagVisual.skin_for_peer(pid))
+	bag.position = Vector3(0, -0.45, 0)  # ghost origin = bag center, like the body
+	ghost.add_child(bag)
 	add_child(ghost)
 	ghost.global_position = _player.global_position
 	_remote_bags[pid] = ghost

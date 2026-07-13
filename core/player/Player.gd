@@ -63,7 +63,7 @@ var _was_grounded: bool = true
 var _spawn_grace: float = 0.0  ## suppress landing noise right after (re)spawn
 
 var _ground_rays: Array[RayCast3D] = []
-var _mesh: MeshInstance3D
+var _visual: Node3D
 var _spawn: Transform3D
 
 func _ready() -> void:
@@ -75,20 +75,12 @@ func _ready() -> void:
 
 	var shape := CollisionShape3D.new()
 	var capsule := CapsuleShape3D.new()
-	capsule.radius = 0.35
-	capsule.height = 1.3
+	capsule.radius = 0.30
+	capsule.height = 0.9  # concept-sheet scale: the bag is ~0.9m tall
 	shape.shape = capsule  # upright — a person standing in a bag
 	add_child(shape)
 
-	_mesh = MeshInstance3D.new()
-	var capsule_mesh := CapsuleMesh.new()
-	capsule_mesh.radius = 0.35
-	capsule_mesh.height = 1.3
-	_mesh.mesh = capsule_mesh
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.20, 0.85, 1.0)  # high-contrast so it reads in clips
-	_mesh.set_surface_override_material(0, mat)
-	add_child(_mesh)
+	set_skin(BagVisual.skin_for_peer(multiplayer.get_unique_id()))
 
 	# Five ground rays (center + 4 offsets): a single center ray misses when
 	# the bag bridges two stair treads, which blocked hopping on staircases.
@@ -120,6 +112,13 @@ func set_caught() -> void:
 
 func set_spawn(xform: Transform3D) -> void:
 	_spawn = xform  # e.g. a network client relocated to its own spawn slot
+
+func set_skin(skin: int) -> void:
+	if _visual != null:
+		_visual.queue_free()
+	_visual = BagVisual.build(0.9, skin)
+	_visual.position = Vector3(0, -0.45, 0)  # bag base at the capsule's bottom
+	add_child(_visual)
 
 func respawn() -> void:
 	state = State.NORMAL
@@ -156,6 +155,14 @@ func _physics_process(delta: float) -> void:
 		if ray.is_colliding():
 			grounded = true
 			break
+
+	# Turn the googly eyes toward the movement heading (local yaw compensates
+	# for whatever the physics body's own yaw is doing).
+	if _visual != null and facing.length() > 0.1:
+		var body_yaw := global_transform.basis.get_euler().y
+		var want_yaw := atan2(-facing.x, -facing.z)
+		_visual.rotation.y = lerp_angle(_visual.rotation.y, want_yaw - body_yaw,
+			clampf(10.0 * delta, 0.0, 1.0))
 
 	match state:
 		State.CAUGHT:

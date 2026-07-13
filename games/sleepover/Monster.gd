@@ -47,22 +47,66 @@ var _watched: Node3D               ## whose motion we measured last frame
 var _watched_prev: Vector3
 var _debug_tick: int = 0
 
+const BODY_HEIGHT := 2.4  # tall enough to loom over 0.9m bags; hunches at doors
+
+var _body: Node3D
+
 func _ready() -> void:
 	# No collision shape and no layers: the world can't stop it, only the
 	# navmesh path decides where it goes. Catching is a distance check in Main.
 	collision_layer = 0
 	collision_mask = 0
+	_build_body()
 
-	var mesh := MeshInstance3D.new()
-	var box_mesh := BoxMesh.new()
-	box_mesh.size = Vector3(0.8, 0.8, 0.8)
-	mesh.mesh = box_mesh
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.9, 0.1, 0.1)
-	mat.emission_enabled = true
-	mat.emission = Color(0.5, 0.0, 0.0)
-	mesh.set_surface_override_material(0, mat)
-	add_child(mesh)
+func _build_body() -> void:
+	# The Housesitter, concept-sheet edition: a tall quilted bell of old
+	# bedding with a pale mask face. Origin sits 0.4 above the floor (the
+	# floor-snap keeps it there); the body hangs from that point.
+	_body = Node3D.new()
+	_body.position = Vector3(0, -0.4, 0)  # body base = floor
+	add_child(_body)
+
+	var cloak_mat := StandardMaterial3D.new()
+	cloak_mat.albedo_color = Color(0.23, 0.13, 0.17)  # dark patchwork quilt
+	cloak_mat.roughness = 0.95
+
+	var cloak := MeshInstance3D.new()
+	var bell := CylinderMesh.new()
+	bell.top_radius = 0.10
+	bell.bottom_radius = 0.60
+	bell.height = BODY_HEIGHT
+	cloak.mesh = bell
+	cloak.position = Vector3(0, BODY_HEIGHT * 0.5, 0)
+	cloak.set_surface_override_material(0, cloak_mat)
+	_body.add_child(cloak)
+
+	# The pale mask — the only bright thing on it. It reads in the dark.
+	var face_mat := StandardMaterial3D.new()
+	face_mat.albedo_color = Color(0.92, 0.87, 0.72)
+	face_mat.emission_enabled = true
+	face_mat.emission = Color(0.45, 0.42, 0.32)
+	var face := MeshInstance3D.new()
+	var face_mesh := SphereMesh.new()
+	face_mesh.radius = 0.16
+	face_mesh.height = 0.38
+	face.mesh = face_mesh
+	face.position = Vector3(0, BODY_HEIGHT * 0.82, -0.16)
+	face.set_surface_override_material(0, face_mat)
+	_body.add_child(face)
+
+	# Hollow eye pits.
+	var pit_mat := StandardMaterial3D.new()
+	pit_mat.albedo_color = Color(0.03, 0.03, 0.04)
+	pit_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	for side: float in [-1.0, 1.0]:
+		var pit := MeshInstance3D.new()
+		var pit_mesh := SphereMesh.new()
+		pit_mesh.radius = 0.045
+		pit_mesh.height = 0.09
+		pit.mesh = pit_mesh
+		pit.position = Vector3(side * 0.065, BODY_HEIGHT * 0.84, -0.29)
+		pit.set_surface_override_material(0, pit_mat)
+		_body.add_child(pit)
 
 	_nav = NavigationAgent3D.new()
 	_nav.path_desired_distance = 0.6
@@ -197,6 +241,20 @@ func _physics_process(delta: float) -> void:
 	if hit:
 		var floor_y: float = hit["position"].y + 0.4
 		global_position.y = lerpf(global_position.y, floor_y, clampf(14.0 * delta, 0.0, 1.0))
+
+	# Face where it's going, and HUNCH under low clearance — a 2.4m thing
+	# folding itself through a 2m doorway is exactly the nightmare we want.
+	if _move_dir.length() > 0.1:
+		var yaw := atan2(-_move_dir.x, -_move_dir.z)
+		_body.rotation.y = lerp_angle(_body.rotation.y, yaw, clampf(8.0 * delta, 0.0, 1.0))
+	var up_query := PhysicsRayQueryParameters3D.create(
+		global_position, global_position + Vector3.UP * (BODY_HEIGHT + 0.5), 1)
+	var ceil_hit := space.intersect_ray(up_query)
+	var clearance := BODY_HEIGHT
+	if ceil_hit:
+		clearance = ceil_hit["position"].y - (global_position.y - 0.4)
+	var squash := clampf((clearance - 0.1) / BODY_HEIGHT, 0.5, 1.0)
+	_body.scale.y = lerpf(_body.scale.y, squash, clampf(10.0 * delta, 0.0, 1.0))
 
 func _can_see_player(delta: float) -> bool:
 	# Measure the target's speed from position deltas (works for the local
