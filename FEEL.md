@@ -24,6 +24,7 @@ engine works.
 |---|---|---|---|
 | `shuffle_force` | 45.0 | push while a WASD key is held | too sluggish to start? raise |
 | `shuffle_speed` | 2.0 | hard speed cap (m/s) | was 1.3 — playtest verdict: boring + monster too quick |
+| `brake_damping` | 8.0 | stop rate with no input | holds position on stair ramps; lower = more slide |
 
 ### Hop & Stamina — the panic economy
 | Constant | Default | What it does | If it feels wrong |

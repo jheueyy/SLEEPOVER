@@ -19,6 +19,7 @@ class_name SleepingBagPlayer
 @export_group("Shuffle")
 @export var shuffle_force: float = 45.0      ## push while a WASD key is held (N)
 @export var shuffle_speed: float = 2.0       ## m/s cap — slowed walk, but not boring
+@export var brake_damping: float = 8.0       ## how hard the bag stops with no input (holds on stair ramps)
 
 # ── Hop & Stamina ──────────────────────────────────────────────────────────
 @export_group("Hop & Stamina")
@@ -193,6 +194,11 @@ func _process_normal(delta: float) -> void:
 		facing = dir
 		if _horizontal_speed() < shuffle_speed:
 			apply_central_force(dir * shuffle_force)
+	elif grounded:
+		# No input: brake to a stop so the bag doesn't creep down stair ramps.
+		var t := clampf(brake_damping * delta, 0.0, 1.0)
+		linear_velocity.x = lerpf(linear_velocity.x, 0.0, t)
+		linear_velocity.z = lerpf(linear_velocity.z, 0.0, t)
 
 	# Hop: tap Space. Full pip = burst. Empty tank = face-plant. That's the game.
 	# (velocity gate: the longer rays still see ground early in a hop's ascent)
