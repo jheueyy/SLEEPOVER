@@ -15,8 +15,11 @@ class_name NoiseMonster
 ## climbs stairs tread by tread instead of floating.
 ## Touch the player = caught (Main's distance check handles the freeze).
 
+signal woke_up  ## fired once when the wake_delay grace period ends
+
 @export var move_speed: float = 2.6        ## faster than shuffle, loses to a hop chain
-@export var hearing_radius: float = 40.0   ## ignore pings farther than this
+@export var wake_delay: float = 40.0       ## secs asleep at round start — the exploration grace
+@export var hearing_radius: float = 14.0   ## room-scale ears, not house-scale (was 40)
 @export var patrol_span: float = 6.0       ## idle back-and-forth distance
 @export var chase_trigger_range: float = 6.0 ## ping this close to it = instant chase
 @export var proximity_sense: float = 3.5   ## it just KNOWS you're there this close
@@ -31,6 +34,8 @@ enum State { PATROL, INVESTIGATE, CHASE }
 
 var player: Node3D                         ## set by Main — chase target
 
+var _asleep: bool = true
+var _wake_timer: float = 0.0
 var _state: State = State.PATROL
 var _chase_timer: float = 0.0
 var _tracked_pos: Vector3          ## stale snapshot of the player it aims at
@@ -39,10 +44,17 @@ var _target: Vector3
 var _has_target: bool = false
 var _patrol_origin: Vector3
 var _patrol_dir: float = 1.0
-var debug_nav: bool = false        ## loopback test mode: dump agent state
+var debug_nav: bool = false        ## loopback test mode: dump path state
 var _spawn: Transform3D
-var _nav: NavigationAgent3D
 var _move_dir: Vector3 = Vector3.ZERO  ## smoothed heading along the nav path
+# Manual path following (NavigationAgent3D advances waypoints by 3D distance,
+# which deadlocks on descents — a waypoint 3m below is "never reached" when
+# you're standing right above it. We advance by HORIZONTAL distance instead;
+# the floor-snap owns the vertical.)
+var _path: PackedVector3Array = []
+var _path_i: int = 0
+var _path_goal: Vector3 = Vector3(INF, INF, INF)
+var _repath_cd: float = 0.0
 var _watched: Node3D               ## whose motion we measured last frame
 var _watched_prev: Vector3
 var _debug_tick: int = 0
@@ -108,16 +120,15 @@ func _build_body() -> void:
 		pit.set_surface_override_material(0, pit_mat)
 		_body.add_child(pit)
 
-	_nav = NavigationAgent3D.new()
-	_nav.path_desired_distance = 0.6
-	_nav.target_desired_distance = 0.5
-	_nav.path_height_offset = 0.45  # paths hug the floor; our center rides above
-	_nav.path_max_distance = 5.0
-	add_child(_nav)
-
 	_spawn = global_transform
 	_patrol_origin = global_position
+	_wake_timer = wake_delay
 	NoiseBus.noise_emitted.connect(_on_noise)
+
+func set_wake(seconds: float) -> void:
+	wake_delay = seconds
+	_wake_timer = seconds
+	_asleep = seconds > 0.0
 
 func respawn() -> void:
 	global_transform = _spawn
@@ -126,9 +137,11 @@ func respawn() -> void:
 	_state = State.PATROL
 	_chase_timer = 0.0
 	_move_dir = Vector3.ZERO
+	_asleep = true
+	_wake_timer = wake_delay
 
 func _on_noise(pos: Vector3, loudness: float) -> void:
-	if loudness <= 0.0:
+	if _asleep or loudness <= 0.0:
 		return
 	if global_position.distance_to(pos) > hearing_radius:
 		return
@@ -145,6 +158,14 @@ func _on_noise(pos: Vector3, loudness: float) -> void:
 		_state = State.INVESTIGATE  # distant noise: go take a look
 
 func _physics_process(delta: float) -> void:
+	# Asleep at round start: deaf, blind, motionless. The exploration window.
+	if _asleep:
+		_wake_timer -= delta
+		if _wake_timer <= 0.0:
+			_asleep = false
+			woke_up.emit()
+		return
+
 	var goal := global_position
 	var has_goal := false
 	var speed := move_speed
@@ -176,7 +197,9 @@ func _physics_process(delta: float) -> void:
 				_tracked_pos = player.global_position
 				_track_cd = track_interval
 			elif _has_target:
-				if _flat_distance(_target) < 0.8:
+				# Arrived — or the path is exhausted (target unreachable):
+				# either way, stop investigating instead of freezing forever.
+				if _flat_distance(_target) < 0.8 or _path_exhausted(_target):
 					_has_target = false
 					_state = State.PATROL  # nothing here — false alarm
 				else:
@@ -205,15 +228,17 @@ func _physics_process(delta: float) -> void:
 	# Turn inertia: the heading blends toward the path direction, so it can't
 	# whip around instantly — juking past it stays possible and earned.
 	if has_goal and _nav_map_ready():
-		_nav.target_position = goal
+		_repath(goal)
+		# Advance waypoints by HORIZONTAL distance (see _path comment above).
+		while _path_i < _path.size() and _flat_distance(_path[_path_i]) < 0.5:
+			_path_i += 1
 		if debug_nav:
 			_debug_tick += 1
 			if _debug_tick % 120 == 0:
-				print("[NETTEST] agent state=%d pos=%v next=%v movedir=%v finished=%s" % [
-					_state, global_position,
-					_nav.get_next_path_position(), _move_dir, _nav.is_navigation_finished()])
-		if not _nav.is_navigation_finished():
-			var to := _nav.get_next_path_position() - global_position
+				print("[NETTEST] path state=%d pos=%v wp=%d/%d goal=%v" % [
+					_state, global_position, _path_i, _path.size(), goal])
+		if _path_i < _path.size():
+			var to := _path[_path_i] - global_position
 			to.y = 0.0  # horizontal walk; the feet find the floor below
 			if to.length() > 0.02:
 				var want := to.normalized()
@@ -230,6 +255,7 @@ func _physics_process(delta: float) -> void:
 			_move_dir = Vector3.ZERO
 	else:
 		_move_dir = Vector3.ZERO
+	_repath_cd -= delta
 
 	# Feet on the floor: snap to the surface underfoot each frame. On stairs
 	# this rides the treads step by step — it WALKS up and down, no floating.
@@ -286,10 +312,22 @@ func _can_see_player(delta: float) -> bool:
 	var hit := space.intersect_ray(query)
 	return hit.is_empty() or hit["collider"] == player
 
+func _repath(goal: Vector3) -> void:
+	# Recompute the path when the goal moved or on a slow heartbeat.
+	if goal.distance_to(_path_goal) > 0.5 or _repath_cd <= 0.0:
+		_path = NavigationServer3D.map_get_path(
+			get_world_3d().navigation_map, global_position, goal, true)
+		_path_goal = goal
+		_path_i = 0
+		_repath_cd = 0.5
+
+func _path_exhausted(goal: Vector3) -> bool:
+	return goal.distance_to(_path_goal) < 0.6 and _path_i >= _path.size()
+
 func _flat_distance(to: Vector3) -> float:
 	var d := to - global_position
 	return Vector2(d.x, d.z).length()
 
 func _nav_map_ready() -> bool:
 	# The navmesh bakes at startup; queries before the map's first sync fail.
-	return NavigationServer3D.map_get_iteration_id(_nav.get_navigation_map()) > 0
+	return NavigationServer3D.map_get_iteration_id(get_world_3d().navigation_map) > 0

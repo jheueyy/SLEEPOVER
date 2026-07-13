@@ -28,9 +28,11 @@ const SPAWNS: Array[Vector3] = [
 	Vector3(-7.0, 1.0, 1.4), Vector3(-4.9, 1.0, 2.1), Vector3(-8.4, 1.0, 3.5),
 	Vector3(-4.9, 1.0, 4.2), Vector3(-7.0, 1.0, 5.6), Vector3(-9.1, 1.0, 5.3),
 ]
-# Dining room — with navmesh it hunts through the whole house, so it starts
-# a couple of doorways away from the sleeping players.
-const MONSTER_SPAWN := Vector3(0.0, 1.0, -4.9)
+# The MASTER BEDROOM — it sleeps in the parents' room at round start, a
+# staircase and half a house from the living room. Waking up is an event.
+# (Attic/basement are navmesh islands for now — see the connectivity task —
+# so they double as monster-free hideouts.)
+const MONSTER_SPAWN := Vector3(-6.3, 4.0, 4.55)
 
 # ── Layout data ────────────────────────────────────────────────────────────
 # Ground: front door opens into the HALL (stairs up + walkway). Living room off
@@ -86,11 +88,10 @@ const WALLS: Array = [
 const SLABS: Array = [
 	# Yard (slightly below ground floor so nobody falls into the void)
 	{"rect": [-12.0, -9.0, 12.0, 9.0], "top": -0.05},
-	# Ground floor — hole at x 6.5..7.5, z -5..-1 (basement stairwell, in garage)
-	{"rect": [-8.0, -6.0, 6.5, 6.0], "top": 0.0},
-	{"rect": [6.5, -6.0, 7.5, -5.0], "top": 0.0},
-	{"rect": [6.5, -1.0, 7.5, 6.0], "top": 0.0},
-	{"rect": [7.5, -6.0, 8.0, 6.0], "top": 0.0},
+	# Ground floor — hole at x 6.25..7.75, z -6..-1 (basement stairwell, in garage)
+	{"rect": [-8.0, -6.0, 6.25, 6.0], "top": 0.0},
+	{"rect": [6.25, -1.0, 7.75, 6.0], "top": 0.0},
+	{"rect": [7.75, -6.0, 8.0, 6.0], "top": 0.0},
 	# Upper floor — holes: main stairwell x -1..0.5 z 0..5, chute x 3..4 z 1..2
 	{"rect": [-8.0, -6.0, -1.0, 6.0], "top": 3.0},
 	{"rect": [-1.0, -6.0, 0.5, 0.0], "top": 3.0},
@@ -99,10 +100,9 @@ const SLABS: Array = [
 	{"rect": [3.0, -6.0, 5.0, 1.0], "top": 3.0},
 	{"rect": [4.0, 1.0, 5.0, 2.0], "top": 3.0},
 	{"rect": [3.0, 2.0, 5.0, 6.0], "top": 3.0},
-	# Attic floor — hole at x -3..-2, z -5..-1 (attic stairwell)
+	# Attic floor — hole at x -3..-1.4, z -6..-1 (attic stairwell; step off sideways)
 	{"rect": [-8.0, -6.0, -3.0, -1.0], "top": 6.0},
-	{"rect": [-3.0, -6.0, -2.0, -5.0], "top": 6.0},
-	{"rect": [-2.0, -6.0, 2.0, -1.0], "top": 6.0},
+	{"rect": [-1.4, -6.0, 2.0, -1.0], "top": 6.0},
 	# Basement floor (under the garage)
 	{"rect": [5.0, -6.0, 8.0, -1.0], "top": -3.0},
 ]
@@ -111,8 +111,12 @@ const SLABS: Array = [
 # direction of climb; base = y of the floor you start from; signed rise.
 const STAIRS: Array = [
 	{"start": Vector2(-0.25, 0.0), "dir": Vector2(0, 1), "base": 0.0, "rise": 0.3, "run": 0.5, "steps": 10, "width": 1.5},  # hall -> upper (walkway stays beside it)
-	{"start": Vector2(7.0, -1.0), "dir": Vector2(0, -1), "base": 0.0, "rise": -0.3, "run": 0.4, "steps": 10, "width": 1.0}, # garage -> basement (steep)
-	{"start": Vector2(-2.5, -1.0), "dir": Vector2(0, -1), "base": 3.0, "rise": 0.3, "run": 0.4, "steps": 10, "width": 1.0}, # kid2 -> attic (steep!)
+	{"start": Vector2(7.0, -1.0), "dir": Vector2(0, -1), "base": 0.0, "rise": -0.3, "run": 0.5, "steps": 10, "width": 1.5}, # garage -> basement
+	{"start": Vector2(-2.2, -1.0), "dir": Vector2(0, -1), "base": 3.0, "rise": 0.3, "run": 0.5, "steps": 10, "width": 1.8}, # kid2 -> attic (wider than its hole: top tread overlaps the attic slab sideways)
+	# NOTE: keep stair run >= 0.5 and width >= 1.5, clear of wall footprints —
+	# narrower/shorter treads voxelize into a disconnected navmesh and the
+	# monster can't change floors there. (The 2.1m-wide main stairs are the
+	# reference that provably bakes connected.)
 ]
 
 # Room labels: gray-box wayfinding + playtest comms ("it's in the DINING ROOM")
@@ -223,13 +227,19 @@ static func _build_stairs(parent: Node3D, stair: Dictionary) -> void:
 	var steps: int = stair["steps"]
 	var width: float = stair["width"] * S
 	for i in range(steps):
-		var plan := start + dir * (run * (i + 0.5))
+		# First/last treads extend 0.4 into the neighboring floor so the
+		# navmesh voxels MERGE across the junction — flush edges at different
+		# heights bake as disconnected islands (learned the hard way).
+		var ext_back := 0.4 if i == 0 else 0.0
+		var ext_fwd := 0.4 if i == steps - 1 else 0.0
+		var length := run + ext_back + ext_fwd
+		var plan := start + dir * (run * (i + 0.5) + (ext_fwd - ext_back) * 0.5)
 		var top := base + rise * (i + 1) if rise > 0.0 else base + rise * i
 		_box(parent,
 			Vector3(plan.x, top - 0.15, plan.y),
-			Vector3(width if absf(dir.y) > 0.5 else run,
+			Vector3(width if absf(dir.y) > 0.5 else length,
 				0.3,
-				run if absf(dir.y) > 0.5 else width),
+				length if absf(dir.y) > 0.5 else width),
 			COL_STEP_A if i % 2 == 0 else COL_STEP_B)
 
 	# Invisible ramp over the treads so bags can SHUFFLE up and down stairs —
@@ -259,6 +269,24 @@ static func _build_stairs(parent: Node3D, stair: Dictionary) -> void:
 	parent.add_child(ramp)
 	var center := (bottom + top_end) * 0.5 - Vector3.UP * 0.06
 	ramp.look_at_from_position(center, top_end, Vector3.UP)
+
+	# Flat landing pads at both floor ends, flush with the floors and touching
+	# the ramp ends. The ramps bake into the navmesh (they're the monster's
+	# stair surface too — its feet still snap to the visible treads), and these
+	# pads guarantee the baked chain floor -> ramp -> floor actually connects:
+	# identical-height overlaps merge; flush edges at differing heights don't.
+	var low_pt := bottom if rise > 0.0 else top_end
+	var high_pt := top_end if rise > 0.0 else bottom
+	var away_low := -fwd if rise > 0.0 else fwd
+	var away_high := fwd if rise > 0.0 else -fwd
+	for pad_data: Array in [[low_pt, away_low], [high_pt, away_high]]:
+		var pt: Vector3 = pad_data[0]
+		var away: Vector3 = pad_data[1]
+		var pad_center: Vector3 = pt + away * 0.3
+		_box(parent, Vector3(pad_center.x, pt.y - 0.15, pad_center.z),
+			Vector3(width if absf(dir.y) > 0.5 else 1.2, 0.3,
+				1.2 if absf(dir.y) > 0.5 else width),
+			COL_FLOOR)
 
 static func _box(parent: Node3D, center: Vector3, size: Vector3,
 		color: Color, unshaded: bool = false) -> void:

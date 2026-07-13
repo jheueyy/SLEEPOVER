@@ -34,6 +34,7 @@ var _lookback: float = 0.0   ## 0 = forward, 1 = fully turned around (Q held)
 var _aim: MeshInstance3D
 var _state_label: Label
 var _net_label: Label
+var _toast: Label
 var _pips: Array[ColorRect] = []
 var _caught: bool = false
 
@@ -101,7 +102,6 @@ func _build_level() -> void:
 	nm.agent_max_climb = 0.4      # stair steps rise 0.3; must survive voxel floor
 	nm.cell_size = 0.2            # matches navigation/3d defaults in project.godot
 	nm.cell_height = 0.2
-	nm.geometry_collision_mask = 1  # bake real geometry only, not player stair ramps
 	nav_region.navigation_mesh = nm
 	nav_region.bake_navigation_mesh(false)  # synchronous — one beat at startup
 
@@ -114,6 +114,7 @@ func _spawn_actors() -> void:
 	_monster.position = HouseSuburban.MONSTER_SPAWN
 	_monster.player = _player
 	_monster.patrol_span = 2.8  # wanders its (scaled-up) room; navmesh handles the rest
+	_monster.woke_up.connect(_on_monster_woke)
 	add_child(_monster)
 
 	# Floating aim arrow so you can read your heading (the bag itself tumbles).
@@ -179,6 +180,17 @@ func _build_hud() -> void:
 	_net_label.position = Vector2(16, 72)
 	_net_label.add_theme_color_override("font_color", Color(0.6, 0.8, 1.0))
 	layer.add_child(_net_label)
+
+	# Center-screen toast for round beats (the wake-up moment).
+	_toast = Label.new()
+	_toast.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_toast.position = Vector2(-260, 120)
+	_toast.custom_minimum_size = Vector2(520, 40)
+	_toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_toast.add_theme_font_size_override("font_size", 28)
+	_toast.add_theme_color_override("font_color", Color(1.0, 0.35, 0.3))
+	_toast.visible = false
+	layer.add_child(_toast)
 
 	# Stamina pip bar, bottom-center — players must FEEL the count, not read it.
 	var pip_row := HBoxContainer.new()
@@ -326,6 +338,21 @@ func _net_caught() -> void:
 		_caught = true
 		_player.set_caught()
 
+func _on_monster_woke() -> void:
+	_show_toast("...something upstairs just woke up.")
+	if _net_connected() and multiplayer.is_server():
+		_net_monster_woke.rpc()
+
+@rpc("authority", "call_remote", "reliable")
+func _net_monster_woke() -> void:
+	_show_toast("...something upstairs just woke up.")
+
+func _show_toast(text: String, secs: float = 4.0) -> void:
+	_toast.text = text
+	_toast.visible = true
+	get_tree().create_timer(secs).timeout.connect(func() -> void:
+		_toast.visible = false)
+
 func _on_local_noise(pos: Vector3, loudness: float) -> void:
 	# Forward our own noise pings to the host so its monster reacts to us.
 	if _net_connected() and not multiplayer.is_server():
@@ -353,6 +380,7 @@ func _on_lobby_ready(lobby_id: int, is_host: bool) -> void:
 		add_child(ping_timer)
 	elif lobby_id == -1 and is_host:
 		_monster.debug_nav = true
+		_monster.set_wake(1.0)  # tests can't wait out the real grace period
 		# ...and the host orders a round reset late in the test window.
 		get_tree().create_timer(20.0).timeout.connect(_reset)
 		# Diagnostic heartbeat: where is the monster and what is it thinking?
@@ -364,9 +392,26 @@ func _on_lobby_ready(lobby_id: int, is_host: bool) -> void:
 			if not has_meta("path_printed"):
 				set_meta("path_printed", true)
 				var map := get_world_3d().navigation_map
-				var path := NavigationServer3D.map_get_path(
-					map, Vector3(0, 0.5, -3.5), Vector3(-5, 0.5, 1), true)
-				print("[NETTEST] dining->living path: %s" % str(path)))
+				var checks := {
+					"ground->upper": [Vector3(-7, 0.5, 1.4), Vector3(0.7, 3.5, 7.4)],
+					"upper->attic": [Vector3(-0.7, 3.5, -4.9), Vector3(-6.0, 6.5, -4.9)],
+					"ground->basement": [Vector3(8.4, 0.5, 0.0), Vector3(8.4, -2.5, -4.9)],
+				}
+				for label: String in checks:
+					var pts: PackedVector3Array = NavigationServer3D.map_get_path(
+						map, checks[label][0], checks[label][1], true)
+					var end := pts[pts.size() - 1] if pts.size() > 0 else Vector3.INF
+					print("[NETTEST] %s pts=%d end=%v" % [label, pts.size(), end])
+				var probes := {
+					"attic tread5": Vector3(-3.08, 4.8, -5.25),
+					"attic floor": Vector3(-6.0, 6.3, -4.9),
+					"basement tread5": Vector3(9.8, -1.5, -4.55),
+					"basement floor": Vector3(9.1, -2.7, -4.9),
+					"main tread5": Vector3(-0.35, 1.8, 2.7),
+				}
+				for label: String in probes:
+					var cp := NavigationServer3D.map_get_closest_point(map, probes[label])
+					print("[NETTEST] closest to %s %v -> %v" % [label, probes[label], cp]))
 		add_child(diag)
 	_update_net_label()
 

@@ -73,7 +73,8 @@ engine works.
 | Constant | Default | What it does | Design rule |
 |---|---|---|---|
 | `move_speed` | 2.6 | chase speed | **faster than shuffle, slower than a hop chain** — 3.3 → 3.0 → 2.6 via playtests |
-| `hearing_radius` | 40.0 | how far a noise ping reaches it | shrink to make the house feel bigger |
+| `wake_delay` | 40.0 | secs asleep in the attic at round start | the exploration grace — ends with a screen toast |
+| `hearing_radius` | 14.0 | how far a noise ping reaches it | was 40 (whole house = no exploration); room-scale now |
 | `chase_trigger_range` | 6.0 | ping this close to it = instant CHASE | distant noise only gets investigated |
 | `proximity_sense` | 3.5 | it just *knows* you're there this close | escalates an investigate into a chase |
 | `chase_memory` | 10.0 | secs of no contact before it loses you | was 6 — house has too many corners, escapes were free |
@@ -97,7 +98,10 @@ engine works.
 > Movement is navmesh-routed (baked from the gray-box at startup) and the body
 > has NO world collision — geometry can never block or snag it. It walks the
 > path with its feet snapped to the surface underfoot, so it climbs stairs
-> tread by tread. Spawns in the DINING ROOM and wanders there until it hears you.
+> tread by tread. It sleeps in the ATTIC for `wake_delay` seconds (deaf, blind,
+> motionless — the exploration window), then wakes with a toast on every
+> player's screen and patrols from up there. Round flow: explore quietly →
+> "...something in the attic just woke up." → movement discipline matters.
 
 ---
 
