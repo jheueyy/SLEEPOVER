@@ -339,13 +339,13 @@ func _net_caught() -> void:
 		_player.set_caught()
 
 func _on_monster_woke() -> void:
-	_show_toast("...something upstairs just woke up.")
+	_show_toast("...something in the attic just woke up.")
 	if _net_connected() and multiplayer.is_server():
 		_net_monster_woke.rpc()
 
 @rpc("authority", "call_remote", "reliable")
 func _net_monster_woke() -> void:
-	_show_toast("...something upstairs just woke up.")
+	_show_toast("...something in the attic just woke up.")
 
 func _show_toast(text: String, secs: float = 4.0) -> void:
 	_toast.text = text
@@ -392,9 +392,13 @@ func _on_lobby_ready(lobby_id: int, is_host: bool) -> void:
 			if not has_meta("path_printed"):
 				set_meta("path_printed", true)
 				var map := get_world_3d().navigation_map
+				print("[NETTEST] link radius=%f" % NavigationServer3D.map_get_link_connection_radius(map))
 				var checks := {
 					"ground->upper": [Vector3(-7, 0.5, 1.4), Vector3(0.7, 3.5, 7.4)],
+					"upper->ground": [Vector3(0.7, 3.5, 7.4), Vector3(-7, 0.5, 1.4)],
 					"upper->attic": [Vector3(-0.7, 3.5, -4.9), Vector3(-6.0, 6.5, -4.9)],
+					"attic->kid2": [Vector3(-6.0, 6.5, -4.9), Vector3(-0.7, 3.5, -4.9)],
+					"attic->living": [Vector3(-7.7, 6.5, -4.9), Vector3(-7, 0.5, 1.4)],
 					"ground->basement": [Vector3(8.4, 0.5, 0.0), Vector3(8.4, -2.5, -4.9)],
 				}
 				for label: String in checks:

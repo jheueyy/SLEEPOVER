@@ -54,6 +54,8 @@ var _move_dir: Vector3 = Vector3.ZERO  ## smoothed heading along the nav path
 var _path: PackedVector3Array = []
 var _path_i: int = 0
 var _path_goal: Vector3 = Vector3(INF, INF, INF)
+var _prev_wp: Vector3 = Vector3.ZERO  ## segment start, for vertical interpolation
+var _on_link: bool = false            ## mid floor-change: hold the path steady
 var _repath_cd: float = 0.0
 var _watched: Node3D               ## whose motion we measured last frame
 var _watched_prev: Vector3
@@ -227,18 +229,23 @@ func _physics_process(delta: float) -> void:
 	# Route the goal through the navmesh; walk it horizontally, feet planted.
 	# Turn inertia: the heading blends toward the path direction, so it can't
 	# whip around instantly — juking past it stays possible and earned.
+	var on_vertical_seg := false
 	if has_goal and _nav_map_ready():
 		_repath(goal)
 		# Advance waypoints by HORIZONTAL distance (see _path comment above).
+		# Each advance is progress — push the stuck-recovery heartbeat back.
 		while _path_i < _path.size() and _flat_distance(_path[_path_i]) < 0.5:
+			_prev_wp = _path[_path_i]
 			_path_i += 1
+			_repath_cd = 3.0
 		if debug_nav:
 			_debug_tick += 1
 			if _debug_tick % 120 == 0:
 				print("[NETTEST] path state=%d pos=%v wp=%d/%d goal=%v" % [
 					_state, global_position, _path_i, _path.size(), goal])
 		if _path_i < _path.size():
-			var to := _path[_path_i] - global_position
+			var wp := _path[_path_i]
+			var to := wp - global_position
 			to.y = 0.0  # horizontal walk; the feet find the floor below
 			if to.length() > 0.02:
 				var want := to.normalized()
@@ -251,22 +258,36 @@ func _physics_process(delta: float) -> void:
 					var step := clampf(angle, -turn_rate * delta, turn_rate * delta)
 					_move_dir = _move_dir.rotated(Vector3.UP, step).normalized()
 				global_position += _move_dir * minf(speed * delta, to.length())
+			# Floor-changing segment (a stairwell link or a whole ramp in one
+			# span): interpolate height along the segment instead of snapping —
+			# the snap ray can't see the destination floor from up/down here.
+			if absf(wp.y - global_position.y) > 1.0:
+				on_vertical_seg = true
+				var seg := _flat_between(_prev_wp, wp)
+				if seg > 0.1:
+					var prog := clampf(1.0 - _flat_distance(wp) / seg, 0.0, 1.0)
+					var want_y := lerpf(_prev_wp.y, wp.y, prog) + 0.1
+					global_position.y = lerpf(global_position.y, want_y,
+						clampf(10.0 * delta, 0.0, 1.0))
 		else:
 			_move_dir = Vector3.ZERO
 	else:
 		_move_dir = Vector3.ZERO
+	_on_link = on_vertical_seg
 	_repath_cd -= delta
 
 	# Feet on the floor: snap to the surface underfoot each frame. On stairs
 	# this rides the treads step by step — it WALKS up and down, no floating.
-	# (mask 1: snaps to real geometry, never the invisible player stair ramps)
+	# (mask 1: snaps to real geometry, never the invisible player stair ramps.
+	# Skipped mid vertical segment — the interpolation above owns the height.)
 	var space := get_world_3d().direct_space_state
-	var query := PhysicsRayQueryParameters3D.create(
-		global_position + Vector3.UP * 1.2, global_position + Vector3.DOWN * 3.0, 1)
-	var hit := space.intersect_ray(query)
-	if hit:
-		var floor_y: float = hit["position"].y + 0.4
-		global_position.y = lerpf(global_position.y, floor_y, clampf(14.0 * delta, 0.0, 1.0))
+	if not on_vertical_seg:
+		var query := PhysicsRayQueryParameters3D.create(
+			global_position + Vector3.UP * 1.2, global_position + Vector3.DOWN * 3.0, 1)
+		var hit := space.intersect_ray(query)
+		if hit:
+			var floor_y: float = hit["position"].y + 0.4
+			global_position.y = lerpf(global_position.y, floor_y, clampf(14.0 * delta, 0.0, 1.0))
 
 	# Face where it's going, and HUNCH under low clearance — a 2.4m thing
 	# folding itself through a 2m doorway is exactly the nightmare we want.
@@ -313,13 +334,19 @@ func _can_see_player(delta: float) -> bool:
 	return hit.is_empty() or hit["collider"] == player
 
 func _repath(goal: Vector3) -> void:
-	# Recompute the path when the goal moved or on a slow heartbeat.
-	if goal.distance_to(_path_goal) > 0.5 or _repath_cd <= 0.0:
+	# A path in progress is left alone: recompute only when the goal genuinely
+	# moved or the stuck-recovery heartbeat expires — and NEVER mid link
+	# crossing, where a fresh path can snap our hovering position back to the
+	# departure floor and yank us into an oscillation.
+	var need := _path.is_empty() \
+		or (not _on_link and (goal.distance_to(_path_goal) > 0.5 or _repath_cd <= 0.0))
+	if need:
 		_path = NavigationServer3D.map_get_path(
 			get_world_3d().navigation_map, global_position, goal, true)
 		_path_goal = goal
 		_path_i = 0
-		_repath_cd = 0.5
+		_prev_wp = global_position
+		_repath_cd = 3.0
 
 func _path_exhausted(goal: Vector3) -> bool:
 	return goal.distance_to(_path_goal) < 0.6 and _path_i >= _path.size()
@@ -327,6 +354,9 @@ func _path_exhausted(goal: Vector3) -> bool:
 func _flat_distance(to: Vector3) -> float:
 	var d := to - global_position
 	return Vector2(d.x, d.z).length()
+
+func _flat_between(a: Vector3, b: Vector3) -> float:
+	return Vector2(b.x - a.x, b.z - a.z).length()
 
 func _nav_map_ready() -> bool:
 	# The navmesh bakes at startup; queries before the map's first sync fail.

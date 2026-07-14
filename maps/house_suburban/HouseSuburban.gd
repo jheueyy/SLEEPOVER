@@ -28,11 +28,9 @@ const SPAWNS: Array[Vector3] = [
 	Vector3(-7.0, 1.0, 1.4), Vector3(-4.9, 1.0, 2.1), Vector3(-8.4, 1.0, 3.5),
 	Vector3(-4.9, 1.0, 4.2), Vector3(-7.0, 1.0, 5.6), Vector3(-9.1, 1.0, 5.3),
 ]
-# The MASTER BEDROOM — it sleeps in the parents' room at round start, a
-# staircase and half a house from the living room. Waking up is an event.
-# (Attic/basement are navmesh islands for now — see the connectivity task —
-# so they double as monster-free hideouts.)
-const MONSTER_SPAWN := Vector3(-6.3, 4.0, 4.55)
+# The ATTIC — it sleeps up there at round start, two staircases and half a
+# house from the living room. Waking up is an event, not a spawn.
+const MONSTER_SPAWN := Vector3(-7.7, 7.0, -4.9)
 
 # ── Layout data ────────────────────────────────────────────────────────────
 # Ground: front door opens into the HALL (stairs up + walkway). Living room off
@@ -63,7 +61,7 @@ const WALLS: Array = [
 	{"a": Vector2(-8, -6), "b": Vector2(-8, 6), "base": 3.0},
 	{"a": Vector2(5, -6), "b": Vector2(5, 6), "base": 3.0},
 	# Upper interior — corridor along z -1..0.5 connects everything
-	{"a": Vector2(-8, -1), "b": Vector2(5, -1), "base": 3.0, "gaps": [[-5.5, DOOR_W], [-1.5, DOOR_W], [3.5, DOOR_W]]},  # kid1, kid2, upbath -> corridor
+	{"a": Vector2(-8, -1), "b": Vector2(5, -1), "base": 3.0, "gaps": [[-5.5, DOOR_W], [0.8, DOOR_W], [3.5, DOOR_W]]},  # kid1, kid2, upbath -> corridor (kid2 door sits east, clear of the attic stairs)
 	{"a": Vector2(-8, 0.5), "b": Vector2(-1, 0.5), "base": 3.0, "gaps": [[-4.5, DOOR_W]]}, # master -> corridor
 	{"a": Vector2(2, 0.5), "b": Vector2(5, 0.5), "base": 3.0, "gaps": [[3.0, DOOR_W]]},    # closet -> corridor
 	{"a": Vector2(-1, 0.5), "b": Vector2(-1, 6), "base": 3.0, "gaps": [[3.0, DOOR_W]]},    # master|landing loop door
@@ -119,6 +117,20 @@ const STAIRS: Array = [
 	# reference that provably bakes connected.)
 ]
 
+# Navmesh links: explicit bridges across the stairwells whose baked meshes
+# don't connect (their ramps terminate into wall footprints). Each pair is
+# [from, to] in plan coords with REAL heights (y is not scaled). Two hops per
+# staircase: along the stairs, then sideways onto the destination floor. The
+# monster's follower walks these horizontally while its floor-snap rides the
+# visible treads, so traversal looks like ordinary stair walking.
+const NAV_LINKS: Array = [
+	# kid2 <-> attic
+	{"from": Vector3(-1.0, 3.3, -3.0), "to": Vector3(-5.0, 6.3, -3.5)},
+	# garage <-> basement
+	{"from": Vector3(7.0, 0.3, -0.8), "to": Vector3(7.0, -2.7, -5.5)},
+	{"from": Vector3(7.0, -2.7, -5.5), "to": Vector3(6.0, -2.7, -3.5)},
+]
+
 # Room labels: gray-box wayfinding + playtest comms ("it's in the DINING ROOM")
 const ROOMS: Array = [
 	{"name": "LIVING ROOM", "at": Vector3(-4.5, 2.2, 2.5)},
@@ -168,6 +180,14 @@ static func build(parent: Node3D) -> void:
 		_box(parent, Vector3(rim[0] * S, 3.1, rim[1] * S),
 			Vector3(1.2 * S if along_x else 0.1, 0.2, 0.1 if along_x else 1.2 * S),
 			COL_CHUTE, true)
+
+	for link_def: Dictionary in NAV_LINKS:
+		var link := NavigationLink3D.new()
+		var f: Vector3 = link_def["from"]
+		var t: Vector3 = link_def["to"]
+		link.start_position = Vector3(f.x * S, f.y, f.z * S)
+		link.end_position = Vector3(t.x * S, t.y, t.z * S)
+		parent.add_child(link)
 
 	for room: Dictionary in ROOMS:
 		var label := Label3D.new()

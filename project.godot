@@ -24,6 +24,9 @@ SteamManager="*res://core/networking/SteamManager.gd"
 ; Match the house navmesh bake (Main.gd) so map and mesh agree on voxel size.
 3d/default_cell_size=0.2
 3d/default_cell_height=0.2
+; Stairwell NavigationLink3D endpoints must reach floor meshes ~1.5m away
+; (the eroded mesh edges sit back from the stair holes).
+3d/default_link_connection_radius=2.0
 
 [physics]
 
