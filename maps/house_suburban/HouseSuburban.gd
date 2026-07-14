@@ -103,6 +103,11 @@ const SLABS: Array = [
 	{"rect": [-1.4, -6.0, 2.0, -1.0], "top": 6.0},
 	# Basement floor (under the garage)
 	{"rect": [5.0, -6.0, 8.0, -1.0], "top": -3.0},
+	# Ceilings — the upper front row and the up-bath have the flat roof at y6;
+	# the attic floor already ceils the back row. Garage gets its own roof.
+	{"rect": [-8.0, -1.0, 5.0, 6.0], "top": 6.0},
+	{"rect": [2.0, -6.0, 5.0, -1.0], "top": 6.0},
+	{"rect": [5.0, -6.0, 8.0, 6.0], "top": 3.0},
 ]
 
 # Stairs: start = plan pos of the first step's near edge center; dir = plan
@@ -154,6 +159,7 @@ const ROOMS: Array = [
 
 const COL_FLOOR := Color(0.30, 0.30, 0.34)
 const COL_WALL := Color(0.22, 0.22, 0.26)
+const COL_ROOF := Color(0.34, 0.20, 0.18)
 const COL_STEP_A := Color(0.34, 0.28, 0.24)
 const COL_STEP_B := Color(0.40, 0.33, 0.28)
 const COL_CHUTE := Color(1.0, 0.9, 0.2)
@@ -181,6 +187,33 @@ static func build(parent: Node3D) -> void:
 			Vector3(1.2 * S if along_x else 0.1, 0.2, 0.1 if along_x else 1.2 * S),
 			COL_CHUTE, true)
 
+	# Gable roof over the attic — two slanted slabs meeting at a ridge, with
+	# rectangular end caps. Purely so the thing reads as a HOUSE from outside.
+	var eave_y := 8.2   # attic wall tops (base 6 + h 2.2)
+	var ridge_y := 9.2
+	for side_z: float in [-6.0, -1.0]:
+		var a := Vector3(-3.0 * S, eave_y, side_z * S)
+		var b := Vector3(-3.0 * S, ridge_y, -3.5 * S)
+		var body := StaticBody3D.new()
+		var cs := CollisionShape3D.new()
+		var bx := BoxShape3D.new()
+		bx.size = Vector3(10.0 * S + 0.4, 0.15, a.distance_to(b) + 0.3)
+		cs.shape = bx
+		body.add_child(cs)
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = bx.size
+		mi.mesh = bm
+		var rmat := StandardMaterial3D.new()
+		rmat.albedo_color = COL_ROOF
+		mi.set_surface_override_material(0, rmat)
+		body.add_child(mi)
+		parent.add_child(body)
+		body.look_at_from_position((a + b) * 0.5, b, Vector3.UP)
+	for gable_x: float in [-8.0, 2.0]:
+		_box(parent, Vector3(gable_x * S, (eave_y + ridge_y) * 0.5, -3.5 * S),
+			Vector3(WALL_T, ridge_y - eave_y, 5.0 * S), COL_WALL)
+
 	for link_def: Dictionary in NAV_LINKS:
 		var link := NavigationLink3D.new()
 		var f: Vector3 = link_def["from"]
@@ -190,14 +223,23 @@ static func build(parent: Node3D) -> void:
 		parent.add_child(link)
 
 	for room: Dictionary in ROOMS:
+		var at: Vector3 = room["at"]
 		var label := Label3D.new()
 		label.text = room["name"]
 		label.font_size = 72
 		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		label.modulate = Color(1, 1, 1, 0.5)
-		var at: Vector3 = room["at"]
 		label.position = Vector3(at.x * S, at.y, at.z * S)
 		parent.add_child(label)
+
+		# One warm lamp per room — with real ceilings, the sun stays outside.
+		var lamp := OmniLight3D.new()
+		lamp.position = Vector3(at.x * S, at.y + 0.3, at.z * S)
+		lamp.omni_range = 6.5
+		lamp.light_energy = 0.7
+		lamp.light_color = Color(1.0, 0.9, 0.75)
+		lamp.shadow_enabled = false
+		parent.add_child(lamp)
 
 static func _build_wall(parent: Node3D, wall: Dictionary) -> void:
 	var a: Vector2 = wall["a"]

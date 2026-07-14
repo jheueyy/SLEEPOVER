@@ -261,7 +261,10 @@ func _physics_process(delta: float) -> void:
 			# Floor-changing segment (a stairwell link or a whole ramp in one
 			# span): interpolate height along the segment instead of snapping —
 			# the snap ray can't see the destination floor from up/down here.
-			if absf(wp.y - global_position.y) > 1.0:
+			# LATCHED on the segment's endpoints, not the current height gap:
+			# a moving chase target must never repath us mid-crossing (start
+			# snapping is ambiguous in midair and yo-yos us back up).
+			if absf(wp.y - _prev_wp.y) > 1.0:
 				on_vertical_seg = true
 				var seg := _flat_between(_prev_wp, wp)
 				if seg > 0.1:

@@ -378,6 +378,15 @@ func _on_lobby_ready(lobby_id: int, is_host: bool) -> void:
 			NoiseBus.emit_noise(_player.global_position, 1.0)
 			print("[NETTEST] client emitted noise ping"))
 		add_child(ping_timer)
+		# ...and wander, so the host's chase target MOVES — the stuck-at-the-
+		# stairwell bug only reproduced against a moving goal.
+		var wander := Timer.new()
+		wander.wait_time = 0.15
+		wander.autostart = true
+		wander.timeout.connect(func() -> void:
+			var t := Time.get_ticks_msec() / 1000.0
+			_player.apply_central_impulse(Vector3(sin(t * 0.6), 0.0, cos(t * 0.6)) * 0.8))
+		add_child(wander)
 	elif lobby_id == -1 and is_host:
 		_monster.debug_nav = true
 		_monster.set_wake(1.0)  # tests can't wait out the real grace period
