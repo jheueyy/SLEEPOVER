@@ -31,7 +31,7 @@ engine works.
 |---|---|---|---|
 | `hop_speed` | 3.6 | forward burst speed of one hop | was 4.0 — chains outran the monster too easily |
 | `hop_up_speed` | 4.6 | upward speed per hop (independent knob) | jump height = up²/(2·gravity) ≈ 0.88m — 3.6 still snagged on stair risers |
-| `stamina_max` | 3.0 | hop pips | was 5 — playtest: 3 makes every hop a real decision |
+| `stamina_max` | 5.0 | hop pips | 5 → 3 → 5: with the full-size house, 3 ran dry before anywhere interesting |
 | `stamina_regen` | 0.6 | pips/sec while grounded (1 pip / ~1.7s) | tuned upward with the 3-pip tank — small tank, fast refill |
 | `regen_delay` | 1.6 | secs after any hop before regen resumes | kills the "6th pip" bug — mid-chain the tank is strictly fixed |
 | `land_loudness` | 1.0 | noise ping per landing thump (0..1) | the risk tax — keep it the loudest thing |
@@ -130,7 +130,7 @@ keeps walking the real treads. Chases continue across floors either way.
 shuffle_speed (2.0)  <  monster.move_speed (2.6)  <  hop-chain pace (~3.6 bursts)
 ```
 The hop-chain-vs-monster gap is deliberately THIN: you pull away slowly while
-pips last, and the tank only buys 3 hops. Escape = spend everything + a corner.
+pips last, and the tank only buys 5 hops. Escape = spend everything + a corner.
 
 Tumble behavior: on any tumble the bag bleeds 65% of its speed, spin is capped,
 and heavy damping switches on until you're upright — it *falls over* in place

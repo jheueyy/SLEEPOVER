@@ -25,7 +25,7 @@ class_name SleepingBagPlayer
 @export_group("Hop & Stamina")
 @export var hop_speed: float = 3.6           ## forward burst speed of one hop (m/s)
 @export var hop_up_speed: float = 4.6        ## upward speed — clears stairs with room to spare
-@export var stamina_max: float = 3.0         ## hop pips
+@export var stamina_max: float = 5.0         ## hop pips
 @export var stamina_regen: float = 0.6       ## pips/sec while grounded (1 pip / ~1.7s)
 @export var regen_delay: float = 1.6         ## secs after a hop before regen resumes — mid-chain you earn NOTHING
 @export var land_loudness: float = 1.0       ## noise ping on each landing thump (0..1)
