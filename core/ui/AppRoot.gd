@@ -13,6 +13,7 @@ var _is_test: bool = false
 var _game: Node = null
 
 # UI roots
+var _ui_layer: CanvasLayer
 var _menu: Control
 var _lobby: Control
 var _settings: Control
@@ -38,7 +39,6 @@ func _ready() -> void:
 		# Solo deterministic harness: straight into the game, no menu, and let
 		# Main._ready drive the selftest itself (don't call begin()).
 		_show(State.GAME)
-		_menu.visible = false
 		_game = GAME_SCENE.instantiate()
 		add_child(_game)
 		return
@@ -47,20 +47,20 @@ func _ready() -> void:
 # ── UI construction (gray-box) ─────────────────────────────────────────────
 
 func _build_ui() -> void:
-	var layer := CanvasLayer.new()
-	add_child(layer)
+	_ui_layer = CanvasLayer.new()
+	add_child(_ui_layer)
 
 	var bg := ColorRect.new()
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	bg.color = Color(0.05, 0.05, 0.08)
-	layer.add_child(bg)
+	_ui_layer.add_child(bg)
 
 	_menu = _build_menu()
-	layer.add_child(_menu)
+	_ui_layer.add_child(_menu)
 	_lobby = _build_lobby()
-	layer.add_child(_lobby)
+	_ui_layer.add_child(_lobby)
 	_settings = _build_settings()
-	layer.add_child(_settings)
+	_ui_layer.add_child(_settings)
 
 func _build_menu() -> Control:
 	var root := VBoxContainer.new()
@@ -197,6 +197,9 @@ func _build_settings() -> Control:
 
 func _show(s: State) -> void:
 	_state = s
+	# The whole UI layer (incl. its opaque background) hides in-game so the 3D
+	# world is visible; the game draws its own HUD on its own CanvasLayer.
+	_ui_layer.visible = s != State.GAME
 	_menu.visible = s == State.MENU
 	_lobby.visible = s == State.LOBBY
 	if s != State.MENU:
