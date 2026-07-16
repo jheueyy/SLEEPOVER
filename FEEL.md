@@ -149,6 +149,8 @@ is a CLUE → ACTION pair with a randomized clue spot; ACTIONs emit NoiseBus pin
 | The Glasses | find | one random player's screen is BLURRED until they find their glasses | click / 0.25 |
 
 - `Objective.NEAR` = 2.0m interaction reach; `Objective.DIAL_TIME` = 1.5s rotary windup.
+- `Objective.DOG_SPEED` = 0.9 m/s — the dog is navmesh-routed (walks through
+  doorways, never through walls) and ambles slowly so it's catchable.
 - Deadbolt `solve_secs` = 3.0. Glasses blur is a full-screen box-blur post-process
   on only the assigned player; clears on pickup.
 - Tuning per-objective solve params lives on the factory methods in `ObjectiveDef.gd`

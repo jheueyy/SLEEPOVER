@@ -12,6 +12,7 @@ signal toast(text: String)
 
 const NEAR := 2.0        ## interaction reach (m)
 const DIAL_TIME := 1.5   ## landline per-digit rotary windup
+const DOG_SPEED := 0.9   ## the dog's amble (m/s) — slow, wandering pet
 
 var def: ObjectiveDef
 var done: bool = false
@@ -22,6 +23,9 @@ var _clue: Node3D
 var _action: Node3D
 var _dog: Node3D
 var _dog_i: int = 0
+var _dog_path: PackedVector3Array = []
+var _dog_path_i: int = 0
+var _dog_repath_cd: float = 0.0
 var _has_snack: bool = false
 var _entry: String = ""
 var _entry_digit: int = -1
@@ -84,15 +88,30 @@ func update(delta: float, player_pos: Vector3, body_count_near_action: int) -> v
 			_tick_rotary(delta, player_pos)
 
 func _update_dog(delta: float) -> void:
-	# The dog paces its loop and barks on a timer — a ping you don't control.
+	# The dog ambles its loop, navmesh-routed so it walks through DOORWAYS
+	# instead of phasing through walls, and barks on a timer (a ping you don't
+	# control). Slow — a wandering pet, not a whippet.
 	var path := HouseSuburban.DOG_PATH
-	var goal: Vector3 = path[_dog_i] * HouseSuburban.S
-	goal.y = path[_dog_i].y
-	var to := goal - _dog.position
-	if to.length() < 0.4:
+	var wp: Vector3 = path[_dog_i] * HouseSuburban.S
+	wp.y = path[_dog_i].y
+	if Vector2(wp.x - _dog.position.x, wp.z - _dog.position.z).length() < 0.6:
 		_dog_i = (_dog_i + 1) % path.size()
-	else:
-		_dog.position += to.normalized() * 1.6 * delta
+		_dog_path = PackedVector3Array()  # force a repath to the new waypoint
+	if _dog_path.size() - _dog_path_i < 2 or _dog_repath_cd <= 0.0:
+		_dog_path = NavigationServer3D.map_get_path(
+			get_world_3d().navigation_map, _dog.position, wp, true)
+		_dog_path_i = 0
+		_dog_repath_cd = 1.0
+	_dog_repath_cd -= delta
+	while _dog_path_i < _dog_path.size() \
+			and Vector2(_dog_path[_dog_path_i].x - _dog.position.x,
+				_dog_path[_dog_path_i].z - _dog.position.z).length() < 0.3:
+		_dog_path_i += 1
+	if _dog_path_i < _dog_path.size():
+		var step := _dog_path[_dog_path_i] - _dog.position
+		step.y = 0.0
+		if step.length() > 0.02:
+			_dog.position += step.normalized() * DOG_SPEED * delta
 	_entry_t += delta
 	if _entry_t >= 4.0:  # bark cadence
 		_entry_t = 0.0
