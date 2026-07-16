@@ -21,6 +21,17 @@ static func get_stream(kind: String) -> AudioStreamWAV:
 		_cache[kind] = _generate(kind)
 	return _cache[kind]
 
+## Fire a transient positional one-shot at `pos`, parented under `host`, and
+## free it when done. For objective action sounds (barks, beeps, clatter).
+static func play_at(host: Node, pos: Vector3, kind: String, max_dist: float = 20.0) -> void:
+	var p := AudioStreamPlayer3D.new()
+	p.stream = get_stream(kind)
+	p.max_distance = max_dist
+	host.add_child(p)
+	p.global_position = pos
+	p.play()
+	p.finished.connect(p.queue_free)
+
 static func _generate(kind: String) -> AudioStreamWAV:
 	match kind:
 		"hum": return _to_wav(_hum(), true)
@@ -29,6 +40,9 @@ static func _generate(kind: String) -> AudioStreamWAV:
 		"sting": return _to_wav(_sting(), false)
 		"screech": return _to_wav(_screech(), false)
 		"zipper": return _to_wav(_zipper(), false)
+		"beep": return _to_wav(_beep(), false)
+		"bark": return _to_wav(_bark(), false)
+		"clatter": return _to_wav(_clatter(), false)
 		_: return _to_wav(_click(), false)
 
 # ── Generators (all return mono float samples in [-1, 1]) ─────────────────
@@ -110,6 +124,46 @@ static func _click() -> PackedFloat32Array:
 	out.resize(n)
 	for i in n:
 		out[i] = randf_range(-0.9, 0.9) * exp(-float(i) * 0.01)
+	return out
+
+static func _beep() -> PackedFloat32Array:
+	# Keypad beep — a hard square tone, loud and cheap.
+	var n := int(RATE * 0.22)
+	var out := PackedFloat32Array()
+	out.resize(n)
+	for i in n:
+		var t := float(i) / RATE
+		out[i] = (1.0 if sin(TAU * 880.0 * t) > 0.0 else -1.0) * 0.45 * sin(PI * (float(i) / n))
+	return out
+
+static func _bark() -> PackedFloat32Array:
+	# Dog bark — two rough noisy bursts with a downward pitch.
+	var n := int(RATE * 0.4)
+	var out := PackedFloat32Array()
+	out.resize(n)
+	var phase := 0.0
+	for burst_at: float in [0.0, 0.2]:
+		var start := int(burst_at * RATE)
+		for i in range(int(RATE * 0.14)):
+			var t := float(i) / (RATE * 0.14)
+			var idx := start + i
+			if idx < n:
+				phase += lerpf(420.0, 180.0, t) / RATE
+				var saw := 2.0 * fmod(phase, 1.0) - 1.0
+				out[idx] += (saw * 0.6 + randf_range(-0.35, 0.35)) * sin(PI * t) * 0.6
+	return out
+
+static func _clatter() -> PackedFloat32Array:
+	# Fuse-box clatter — a burst of metallic clicks.
+	var n := int(RATE * 0.5)
+	var out := PackedFloat32Array()
+	out.resize(n)
+	for c in 9:
+		var start := int(randf_range(0.0, 0.42) * RATE)
+		var f := randf_range(900.0, 2200.0)
+		for i in range(int(RATE * 0.05)):
+			if start + i < n:
+				out[start + i] += sin(TAU * f * float(i) / RATE) * exp(-float(i) * 0.02) * 0.5
 	return out
 
 static func _to_wav(samples: PackedFloat32Array, looped: bool) -> AudioStreamWAV:

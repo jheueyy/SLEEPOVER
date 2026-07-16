@@ -44,7 +44,7 @@ const MONSTER_SPAWN := Vector3(-7.7, 7.0, -4.9)
 const WALLS: Array = [
 	# Ground outer shell
 	{"a": Vector2(-8, -6), "b": Vector2(8, -6), "base": 0.0},
-	{"a": Vector2(-8, 6), "b": Vector2(8, 6), "base": 0.0, "gaps": [[0.5, 1.2]]},  # front door -> hall
+	{"a": Vector2(-8, 6), "b": Vector2(8, 6), "base": 0.0, "gaps": [[0.5, 1.2], [6.5, 1.4]]},  # front door -> hall, garage door
 	{"a": Vector2(-8, -6), "b": Vector2(-8, 6), "base": 0.0},
 	{"a": Vector2(8, -6), "b": Vector2(8, 6), "base": 0.0},
 	# Ground interior
@@ -158,7 +158,8 @@ const HIDE_SPOTS: Array = [
 	Vector3(5.8, -3.0, -5.2),   # basement corner
 ]
 
-# The Landline objective: the note spawns at ONE of these (host picks).
+# ── Objective spots (plan x/z + floor y; host picks one clue spot per round) ──
+# The Landline: number note somewhere, dial at the hall wall phone.
 const CLUE_SPOTS: Array = [
 	Vector3(-7.4, 0.0, -5.4),   # kitchen fridge
 	Vector3(1.5, 0.0, 3.0),     # hallway table
@@ -166,6 +167,58 @@ const CLUE_SPOTS: Array = [
 	Vector3(-4.5, 0.0, 1.0),    # living room couch
 ]
 const PHONE_SPOT := Vector3(1.7, 0.0, 5.4)  # hall wall by the front door
+
+# The Breaker: fuse-order diagram in the garage, fuse box in the basement.
+const BREAKER_DIAGRAM_SPOTS: Array = [
+	Vector3(7.4, 0.0, -3.0), Vector3(6.4, 0.0, 1.0), Vector3(7.4, 0.0, 4.5),
+]
+const BREAKER_BOX_SPOT := Vector3(5.6, -3.0, -5.2)  # basement wall
+
+# The Dog Has The Keys: grab a snack from the pantry, then reach the wandering
+# dog. The dog paces this ground-floor loop.
+const DOG_SNACK_SPOT := Vector3(3.5, 0.0, -5.0)     # pantry shelf
+const DOG_PATH: Array = [
+	Vector3(-5.0, 0.0, -3.5), Vector3(-4.5, 0.0, 2.5),
+	Vector3(0.5, 0.0, 4.0), Vector3(-0.5, 0.0, -3.5),
+]
+
+# The Deadbolt: two players at the back door (kitchen), both holding E.
+const DEADBOLT_SPOT := Vector3(-6.5, 0.0, -5.6)
+
+# The Garage Code: birthday clue somewhere, keypad by the garage door.
+const GARAGE_CLUE_SPOTS: Array = [
+	Vector3(-4.5, 0.0, 3.5),    # living room banner
+	Vector3(-5.5, 0.0, -3.0),   # kitchen calendar
+	Vector3(1.5, 0.0, 4.5),     # hall photo
+]
+const GARAGE_KEYPAD_SPOT := Vector3(6.5, 0.0, 5.3)  # garage door wall
+
+# The Glasses: the blurred player's glasses sit at one of these.
+const GLASSES_SPOTS: Array = [
+	Vector3(-5.0, 3.0, -3.5),   # kid room 1
+	Vector3(-0.5, 3.0, -3.5),   # kid room 2
+	Vector3(3.5, 3.0, 4.0),     # office
+	Vector3(-6.5, 3.0, 3.5),    # master bed
+]
+
+# Escape exits (unlocked when 3 objectives are done): [name, plan center, y,
+# half-extent, has_door_blocker]. Walk into a zone while armed = ESCAPE.
+const EXITS: Array = [
+	{"name": "FRONT DOOR", "at": Vector3(0.5, 1.0, 7.4), "half": Vector2(1.2, 1.2), "door": "front_door"},
+	{"name": "GARAGE", "at": Vector3(6.5, 1.0, 7.4), "half": Vector2(1.4, 1.2), "door": "garage_door"},
+	{"name": "BASEMENT WINDOW", "at": Vector3(7.4, -2.0, -5.4), "half": Vector2(1.2, 1.2), "door": ""},
+]
+
+static func exits() -> Array:
+	var out: Array = []
+	for e: Dictionary in EXITS:
+		out.append({
+			"name": e["name"],
+			"at": scaled(e["at"]),
+			"half": Vector2(e["half"].x * S, e["half"].y * S),
+			"door": e["door"],
+		})
+	return out
 
 static func patrol_points() -> Array[Vector3]:
 	var out: Array[Vector3] = []
@@ -254,25 +307,26 @@ static func build(parent: Node3D) -> void:
 		_box(parent, Vector3(gable_x * S, (eave_y + ridge_y) * 0.5, -3.5 * S),
 			Vector3(WALL_T, ridge_y - eave_y, 5.0 * S), COL_WALL)
 
-	# Front door: a real blocker in the doorway. Unlocking (the Landline) hides
-	# it and disables its collision; escaping means walking out through it.
-	var door := StaticBody3D.new()
-	door.add_to_group("front_door")
-	door.position = Vector3(0.5 * S, 1.0, 6.0 * S)
-	var door_shape := CollisionShape3D.new()
-	var door_box := BoxShape3D.new()
-	door_box.size = Vector3(1.2 * S, 2.0, 0.25)
-	door_shape.shape = door_box
-	door.add_child(door_shape)
-	var door_mesh := MeshInstance3D.new()
-	var door_bm := BoxMesh.new()
-	door_bm.size = door_box.size
-	door_mesh.mesh = door_bm
-	var door_mat := StandardMaterial3D.new()
-	door_mat.albedo_color = Color(0.45, 0.30, 0.16)
-	door_mesh.set_surface_override_material(0, door_mat)
-	door.add_child(door_mesh)
-	parent.add_child(door)
+	# Exit doors: real blockers in the doorways. Arming escape (3 objectives)
+	# hides them and disables collision; escaping = walking out through one.
+	for door_def: Array in [["front_door", 0.5, 1.2], ["garage_door", 6.5, 1.4]]:
+		var door := StaticBody3D.new()
+		door.add_to_group(door_def[0])
+		door.position = Vector3(door_def[1] * S, 1.0, 6.0 * S)
+		var door_shape := CollisionShape3D.new()
+		var door_box := BoxShape3D.new()
+		door_box.size = Vector3(door_def[2] * S, 2.0, 0.25)
+		door_shape.shape = door_box
+		door.add_child(door_shape)
+		var door_mesh := MeshInstance3D.new()
+		var door_bm := BoxMesh.new()
+		door_bm.size = door_box.size
+		door_mesh.mesh = door_bm
+		var door_mat := StandardMaterial3D.new()
+		door_mat.albedo_color = Color(0.45, 0.30, 0.16)
+		door_mesh.set_surface_override_material(0, door_mat)
+		door.add_child(door_mesh)
+		parent.add_child(door)
 
 	# Hiding volumes: translucent green nooks. Main wires their signals.
 	for hs: Vector3 in HIDE_SPOTS:

@@ -28,8 +28,6 @@ enum Phase { LOBBY, LIGHTS_OUT, ROUND, RESULTS }
 @export var rescue_time: float = 5.0
 @export var rescue_zipper_at: float = 3.0   ## the loud zipper ping mid-rescue
 @export var zipper_loudness: float = 0.9
-@export var dial_time: float = 1.5          ## per rotary digit
-@export var dial_loudness: float = 0.8
 
 var _player: SleepingBagPlayer
 var _monster: NoiseMonster
@@ -60,27 +58,23 @@ var _phone_label: Label
 var phase: Phase = Phase.LOBBY
 var _phase_timer: float = 0.0
 var _round_elapsed: float = 0.0
-var _door: StaticBody3D
-var _door_locked: bool = true
-var _objective: ObjectiveDef
-var _phone_number: String = ""
-var _note_node: Node3D
-var _phone_node: Node3D
-var _dial_entered: String = ""
-var _dial_digit: int = -1
-var _dial_t: float = 0.0
-var _landline_done: bool = false
+var _objectives: Array[Objective] = []   ## the 5 active this round
+var _done_ids: Array[String] = []        ## objective ids completed (need 3)
+var _escape_armed: bool = false
+var _blurred_pid: int = 0                 ## glasses: whose screen is blurred (0 = nobody)
 var _rescue_target: Node3D = null
 var _rescue_t: float = 0.0
 var _rescue_zipped: bool = false
 var _debug_visible: bool = false
 var _monster_fx_state: int = -1
 
+# Glasses blur (post-process on the one blurred player)
+var _blur_overlay: ColorRect
+
 # Audio
 var _heartbeat: AudioStreamPlayer
 var _sting: AudioStreamPlayer
 var _zip_sound: AudioStreamPlayer
-var _click_sound: AudioStreamPlayer
 
 # Networking: each peer simulates its OWN bag; remote bags are ghosts.
 var _remote_bags: Dictionary = {}     ## peer_id -> Node3D ghost
@@ -96,8 +90,6 @@ const PIP_ON := Color(1.0, 0.85, 0.25)
 const PIP_OFF := Color(0.25, 0.25, 0.28)
 const FLAG_COCOONED := 1
 const FLAG_HIDDEN := 2
-
-var _escape_z: float = 6.0 * HouseSuburban.S + 0.5
 
 func _ready() -> void:
 	_build_environment()
@@ -124,17 +116,33 @@ func _ready() -> void:
 # hide/ping logic without a second player or the stochastic live chase.
 func _run_selftest() -> void:
 	var pass_all := true
-	# 1. LANDLINE -> ESCAPE. Start a round, dial the number, walk out the door.
+	# 1. OBJECTIVES + ESCAPE. 5 spawn; completing 3 arms escape + unlocks doors;
+	#    walking into TWO different exits both end the round in ESCAPE.
 	_host_start_round()
 	_apply_phase(Phase.ROUND, {})
-	var ok_locked := _door_locked and _door.visible
-	_complete_landline()
-	var ok_unlocked := not _door_locked and not _door.visible
-	_player.global_position = Vector3(0.5 * HouseSuburban.S, 1.0, _escape_z + 1.0)
+	var ok_count := _objectives.size() == 5
+	var front_locked := _exit_door_locked("front_door")
+	# Force 3 objectives done (whichever 5 were drawn).
+	for i in 3:
+		_authoritative_complete(_objectives[i].def.id)
+	var ok_armed := _escape_armed and not _exit_door_locked("front_door")
+	# Exit A: front door.
+	var exits := HouseSuburban.exits()
+	_player.global_position = exits[0]["at"]
 	_net_report_escape(1)
-	var ok_escape := phase == Phase.RESULTS and _results_label.text.contains("ESCAPE")
-	print("[SELFTEST] landline: door starts locked=%s unlocks=%s -> ESCAPE=%s" % [ok_locked, ok_unlocked, ok_escape])
-	pass_all = pass_all and ok_locked and ok_unlocked and ok_escape
+	var ok_exit_a := phase == Phase.RESULTS and _results_label.text.contains("ESCAPE")
+	# Exit B: garage (fresh armed round).
+	_apply_phase(Phase.LOBBY, {})
+	_host_start_round()
+	_apply_phase(Phase.ROUND, {})
+	for i in 3:
+		_authoritative_complete(_objectives[i].def.id)
+	_player.global_position = exits[1]["at"]
+	_net_report_escape(1)
+	var ok_exit_b := phase == Phase.RESULTS and _results_label.text.contains("ESCAPE")
+	print("[SELFTEST] objectives: 5spawn=%s front-locked=%s 3done-arms=%s exitA=%s exitB=%s" % [
+		ok_count, front_locked, ok_armed, ok_exit_a, ok_exit_b])
+	pass_all = pass_all and ok_count and front_locked and ok_armed and ok_exit_a and ok_exit_b
 
 	# 2. SUNRISE. Round with the timer already run out and a survivor.
 	_apply_phase(Phase.LOBBY, {})
@@ -178,6 +186,31 @@ func _run_selftest() -> void:
 	print("[SELFTEST] dial input: numberrow=%s keypad=%s rejects-others=%s" % [row_ok, kp_ok, reject_ok])
 	pass_all = pass_all and row_ok and kp_ok and reject_ok
 
+	# 6. GLASSES BLUR. A round with only the glasses objective, blurred = me:
+	# the blur overlay turns on, and clears when the glasses are picked up.
+	_apply_phase(Phase.LOBBY, {})
+	_apply_phase(Phase.LIGHTS_OUT, {"objs": [{"id": "glasses", "clue": 0}], "blurred": 1})
+	_apply_phase(Phase.ROUND, {})
+	var blur_on := _blur_overlay.visible
+	_authoritative_complete("glasses")
+	var blur_off := not _blur_overlay.visible
+	print("[SELFTEST] glasses: blur on for assigned player=%s, clears on pickup=%s" % [blur_on, blur_off])
+	pass_all = pass_all and blur_on and blur_off
+
+	# 7. RANDOMIZATION. Two rounds should not spawn the identical clue layout
+	# every time (spot check: object id set or a clue index differs across rolls).
+	var layouts := {}
+	for _r in 6:
+		_apply_phase(Phase.LOBBY, {})
+		_host_start_round()
+		var sig := ""
+		for o: Objective in _objectives:
+			sig += "%s%d," % [o.def.id, o.seed.get("clue", -1)]
+		layouts[sig] = true
+	var ok_varied := layouts.size() >= 2
+	print("[SELFTEST] randomization: %d distinct layouts across 6 rolls" % layouts.size())
+	pass_all = pass_all and ok_varied
+
 	print("[SELFTEST] RESULT: %s" % ("ALL PASS" if pass_all else "FAIL"))
 	get_tree().quit(0 if pass_all else 1)
 
@@ -215,7 +248,6 @@ func _build_level() -> void:
 	nav_region.navigation_mesh = nm
 	nav_region.bake_navigation_mesh(false)
 
-	_door = get_tree().get_nodes_in_group("front_door")[0]
 	for area: Node in get_tree().get_nodes_in_group("hide_spot"):
 		var a := area as Area3D
 		a.body_entered.connect(_on_hide_entered)
@@ -327,6 +359,30 @@ func _build_hud() -> void:
 	_debug_label.add_theme_color_override("font_color", Color(0.4, 1.0, 0.5))
 	layer.add_child(_debug_label)
 
+	# Glasses blur: a full-screen post-process box blur, on only for the one
+	# player who lost their glasses (The Glasses objective). Clears on pickup.
+	_blur_overlay = ColorRect.new()
+	_blur_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_blur_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_blur_overlay.visible = false
+	var blur_shader := Shader.new()
+	blur_shader.code = """
+shader_type canvas_item;
+uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
+void fragment() {
+	vec2 px = 3.0 / vec2(textureSize(screen_tex, 0));
+	vec4 c = vec4(0.0);
+	for (int x = -2; x <= 2; x++)
+		for (int y = -2; y <= 2; y++)
+			c += texture(screen_tex, SCREEN_UV + vec2(float(x), float(y)) * px);
+	COLOR = c / 25.0;
+}
+"""
+	var blur_mat := ShaderMaterial.new()
+	blur_mat.shader = blur_shader
+	_blur_overlay.material = blur_mat
+	layer.add_child(_blur_overlay)
+
 	var pip_row := HBoxContainer.new()
 	pip_row.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
 	pip_row.position = Vector2(-70, -48)
@@ -393,9 +449,6 @@ func _build_audio() -> void:
 	_zip_sound = AudioStreamPlayer.new()
 	_zip_sound.stream = SoundKit.get_stream("zipper")
 	add_child(_zip_sound)
-	_click_sound = AudioStreamPlayer.new()
-	_click_sound.stream = SoundKit.get_stream("click")
-	add_child(_click_sound)
 
 # ── Round flow (host authoritative) ────────────────────────────────────────
 
@@ -404,9 +457,9 @@ func _enter_lobby() -> void:
 	_results_overlay.visible = false
 	_cocoon_overlay.visible = false
 	_phone_panel.visible = false
-	_landline_done = false
-	_set_door_locked(true)
-	_clear_objective_props()
+	_blur_overlay.visible = false
+	_clear_objectives()
+	_set_exits_locked(true)
 	_player.respawn()
 	_monster.respawn()
 	_monster.set_wake(1e9)  # sleeps until lights out
@@ -418,19 +471,39 @@ func _enter_lobby() -> void:
 		_show_toast("LOBBY — host presses ENTER to start the night", 6.0)
 
 func _host_start_round() -> void:
-	# Host picks the objective layout and tells everyone.
-	var spot_idx := randi() % _objective_def().clue_spots.size()
-	var number := ""
-	for i in 4:
-		number += str(randi() % 10)
-	_apply_phase(Phase.LIGHTS_OUT, {"spot": spot_idx, "number": number})
+	# Host rolls the round layout: 5 of 6 objectives, each with a randomized
+	# clue spot + code, and (if The Glasses is drawn) a random blurred player.
+	var defs := ObjectiveDef.all()
+	defs.shuffle()
+	defs = defs.slice(0, 5)
+	var objs: Array = []
+	var has_glasses := false
+	for d: ObjectiveDef in defs:
+		var s := {"id": d.id}
+		if d.clue_spots.size() > 0:
+			s["clue"] = randi() % d.clue_spots.size()
+		if d.code_len > 0:
+			var lo := 1 if d.kind == ObjectiveDef.Kind.BREAKER else 0
+			var hi := 3 if d.kind == ObjectiveDef.Kind.BREAKER else 9
+			var code := ""
+			for i in d.code_len:
+				code += str(randi_range(lo, hi))
+			s["code"] = code
+		if d.kind == ObjectiveDef.Kind.GLASSES:
+			has_glasses = true
+		objs.append(s)
+	var blurred := 0
+	if has_glasses:
+		var players: Array[int] = [1]
+		if _net_connected():
+			players = [_my_id()]
+			for pid in multiplayer.get_peers():
+				players.append(pid)
+		blurred = players[randi() % players.size()]
+	var data := {"objs": objs, "blurred": blurred}
+	_apply_phase(Phase.LIGHTS_OUT, data)
 	if _net_connected():
-		_net_phase.rpc(Phase.LIGHTS_OUT, {"spot": spot_idx, "number": number})
-
-func _objective_def() -> ObjectiveDef:
-	if _objective == null:
-		_objective = ObjectiveDef.landline()
-	return _objective
+		_net_phase.rpc(Phase.LIGHTS_OUT, data)
 
 func _apply_phase(p: Phase, data: Dictionary) -> void:
 	phase = p
@@ -439,13 +512,14 @@ func _apply_phase(p: Phase, data: Dictionary) -> void:
 			_enter_lobby()
 		Phase.LIGHTS_OUT:
 			_phase_timer = lights_out_duration
-			_setup_objective(int(data.get("spot", 0)), str(data.get("number", "0000")))
+			_setup_objectives(data)
 			_player.respawn()
 			_monster.respawn()
 			_monster.set_wake(lights_out_duration)
 			_cocoon_overlay.visible = false
 			_show_toast("LIGHTS OUT.", 3.0)
-			print("[NETTEST] phase=LIGHTS_OUT number=%s" % data.get("number"))
+			print("[NETTEST] phase=LIGHTS_OUT objs=%d blurred=%d" % [
+				(data.get("objs", []) as Array).size(), data.get("blurred", 0)])
 		Phase.ROUND:
 			_phase_timer = round_duration
 			_round_elapsed = 0.0
@@ -491,71 +565,113 @@ func _show_results(data: Dictionary) -> void:
 	_cocoon_overlay.visible = false
 	_phone_panel.visible = false
 
-# ── Objective: The Landline ────────────────────────────────────────────────
+# ── Objectives (data-driven; complete any 3 to arm escape) ─────────────────
 
-func _setup_objective(spot_idx: int, number: String) -> void:
-	_clear_objective_props()
-	_phone_number = number
-	_landline_done = false
-	_dial_entered = ""
-	_dial_digit = -1
-	_set_door_locked(true)
-	var def := _objective_def()
+func _setup_objectives(data: Dictionary) -> void:
+	_clear_objectives()
+	_done_ids.clear()
+	_escape_armed = false
+	_set_exits_locked(true)
+	var by_id := {}
+	for d: ObjectiveDef in ObjectiveDef.all():
+		by_id[d.id] = d
+	_blurred_pid = int(data.get("blurred", 0))
+	var blurred_me := _blurred_pid != 0 and _blurred_pid == _my_id()
+	for entry: Dictionary in data.get("objs", []):
+		var def: ObjectiveDef = by_id[entry["id"]]
+		var o := Objective.new()
+		add_child(o)
+		var is_glasses := def.kind == ObjectiveDef.Kind.GLASSES
+		o.setup(def, entry, blurred_me and is_glasses)
+		o.completed.connect(_on_objective_completed)
+		o.action_noise.connect(func(pos: Vector3, loud: float) -> void: NoiseBus.emit_noise(pos, loud))
+		o.toast.connect(func(t: String) -> void: _show_toast(t, 5.0))
+		_objectives.append(o)
+	# Blur the assigned player's screen until they find their glasses.
+	_blur_overlay.visible = blurred_me and _has_objective(ObjectiveDef.Kind.GLASSES)
 
-	_note_node = _make_prop(def.clue_spots[spot_idx], Color(1.0, 0.95, 0.4), "NOTE")
-	_phone_node = _make_prop(def.action_spot, Color(0.8, 0.3, 0.3), "PHONE")
-	_phone_node.position.y += 0.9  # wall phone height
+func _clear_objectives() -> void:
+	for o: Objective in _objectives:
+		o.queue_free()
+	_objectives.clear()
 
-func _make_prop(at: Vector3, color: Color, text: String) -> Node3D:
-	var prop := Node3D.new()
-	var mesh := MeshInstance3D.new()
-	var box := BoxMesh.new()
-	box.size = Vector3(0.3, 0.3, 0.12)
-	mesh.mesh = box
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mesh.set_surface_override_material(0, mat)
-	mesh.position.y = 0.4
-	prop.add_child(mesh)
-	var label := Label3D.new()
-	label.text = text
-	label.font_size = 48
-	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	label.position.y = 0.9
-	prop.add_child(label)
-	prop.position = at
-	add_child(prop)
-	return prop
+func _has_objective(kind: int) -> bool:
+	for o: Objective in _objectives:
+		if o.def.kind == kind:
+			return true
+	return false
 
-func _clear_objective_props() -> void:
-	if _note_node != null:
-		_note_node.queue_free()
-		_note_node = null
-	if _phone_node != null:
-		_phone_node.queue_free()
-		_phone_node = null
-
-func _set_door_locked(locked: bool) -> void:
-	_door_locked = locked
-	_door.visible = locked
-	(_door.get_child(0) as CollisionShape3D).disabled = not locked
+func _on_objective_completed(id: String) -> void:
+	if _is_authority():
+		_authoritative_complete(id)
+	else:
+		_report_objective.rpc_id(1, id)
 
 @rpc("any_peer", "call_remote", "reliable")
-func _net_landline_done() -> void:
-	_complete_landline()
+func _report_objective(id: String) -> void:
+	if _is_authority():
+		_authoritative_complete(id)
 
-func _complete_landline() -> void:
-	if _landline_done:
+func _authoritative_complete(id: String) -> void:
+	if _done_ids.has(id):
 		return
-	_landline_done = true
-	_set_door_locked(false)
-	_show_toast("A voice answers. The FRONT DOOR unlocks. RUN.", 6.0)
-	print("[NETTEST] landline complete")
+	_mark_objective_done(id)
+	var armed := _done_ids.size() >= 3
+	if armed and not _escape_armed:
+		_arm_escape()
+	_net_objective_done.rpc(id, _escape_armed)
+
+@rpc("authority", "call_remote", "reliable")
+func _net_objective_done(id: String, armed: bool) -> void:
+	_mark_objective_done(id)
+	if armed and not _escape_armed:
+		_arm_escape()
+
+func _mark_objective_done(id: String) -> void:
+	if not _done_ids.has(id):
+		_done_ids.append(id)
+	for o: Objective in _objectives:
+		if o.def.id == id:
+			o.force_done()
+			if o.blurred_is_me:
+				_blur_overlay.visible = false  # got the glasses
+	_show_toast("Task done (%d/3).  %s" % [mini(_done_ids.size(), 3), id], 3.0)
+	print("[NETTEST] objective done: %s (%d)" % [id, _done_ids.size()])
+
+func _arm_escape() -> void:
+	_escape_armed = true
+	_set_exits_locked(false)
+	_show_toast("3 TASKS DONE. The exits are open — GET OUT.", 6.0)
+	print("[NETTEST] escape armed")
+
+func _set_exits_locked(locked: bool) -> void:
+	for e: Dictionary in HouseSuburban.exits():
+		if e["door"] == "":
+			continue
+		for node: Node in get_tree().get_nodes_in_group(e["door"]):
+			var d := node as StaticBody3D
+			d.visible = locked
+			(d.get_child(0) as CollisionShape3D).disabled = not locked
+
+func _exit_door_locked(group: String) -> bool:
+	var nodes := get_tree().get_nodes_in_group(group)
+	return nodes.size() > 0 and (nodes[0] as StaticBody3D).visible
+
+func _player_at_exit() -> String:
+	# Which unlocked exit (if any) the local player is standing in.
+	if not _escape_armed:
+		return ""
+	var p := _player.global_position
+	for e: Dictionary in HouseSuburban.exits():
+		var at: Vector3 = e["at"]
+		var half: Vector2 = e["half"]
+		if absf(p.x - at.x) < half.x and absf(p.z - at.z) < half.y and absf(p.y - at.y) < 2.5:
+			return e["name"]
+	return ""
 
 @rpc("any_peer", "call_remote", "reliable")
 func _net_report_escape(pid: int) -> void:
-	if _is_authority() and phase == Phase.ROUND and not _door_locked:
+	if _is_authority() and phase == Phase.ROUND and _escape_armed:
 		print("[NETTEST] escape by peer %d" % pid)
 		_host_end_round("ESCAPE")
 
@@ -714,10 +830,11 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_E:
 				_try_interact_press()
 			_:
-				if _phone_panel.visible:
-					var digit := _keycode_to_digit(event.keycode)
-					if digit != -1:
-						_dial_press(digit)
+				var digit := _keycode_to_digit(event.keycode)
+				if digit != -1:
+					var entry := _active_entry()
+					if entry != null:
+						entry.on_key(digit)
 	elif event is InputEventMouseButton and event.pressed:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
@@ -729,57 +846,21 @@ func _keycode_to_digit(kc: int) -> int:
 		return kc - KEY_KP_0
 	return -1
 
+func _active_entry() -> Objective:
+	for o: Objective in _objectives:
+		if o.panel_open():
+			return o
+	return null
+
 func _try_interact_press() -> void:
 	if phase != Phase.ROUND or _player.state == SleepingBagPlayer.State.COCOONED:
 		return
 	if _rescue_target != null:
 		return  # rescue is the hold-E path
-	if _note_node != null \
-			and _player.global_position.distance_to(_note_node.global_position) < 1.8:
-		_show_toast("the note reads:  %s" % _phone_number, 6.0)
-		return
-	if _phone_node != null \
-			and _player.global_position.distance_to(_phone_node.global_position) < 2.0:
-		_phone_panel.visible = not _phone_panel.visible
-		_dial_entered = ""
-		_dial_digit = -1
-
-func _dial_press(digit: int) -> void:
-	if _dial_digit != -1 or _landline_done:
-		return  # mid-dial
-	_dial_digit = digit
-	_dial_t = 0.0
-
-func _update_dial(delta: float) -> void:
-	if not _phone_panel.visible:
-		return
-	if _phone_node == null \
-			or _player.global_position.distance_to(_phone_node.global_position) > 2.6:
-		_phone_panel.visible = false
-		return
-	var shown := ""
-	for c in _dial_entered:
-		shown += "* "
-	if _dial_digit != -1:
-		_dial_t += delta
-		var prog := _dial_t / dial_time
-		shown += "%d(%d%%)" % [_dial_digit, int(prog * 100.0)]
-		if _dial_t >= dial_time:
-			_click_sound.play()
-			NoiseBus.emit_noise(_player.global_position, dial_loudness)  # clatter
-			var want := int(String(_phone_number[_dial_entered.length()]))
-			if _dial_digit == want:
-				_dial_entered += str(_dial_digit)
-				if _dial_entered.length() == 4:
-					_complete_landline()
-					if _net_connected():
-						_net_landline_done.rpc()
-					_phone_panel.visible = false
-			else:
-				_dial_entered = ""
-				_show_toast("...wrong number. The dial spins back.", 3.0)
-			_dial_digit = -1
-	_phone_label.text = "OLD ROTARY PHONE\ndial the number from the note (keys 0-9)\n\n[ %s ]" % shown
+	var p := _player.global_position
+	for o: Objective in _objectives:
+		if o.try_interact(p):
+			return
 
 # ── Frame loop ─────────────────────────────────────────────────────────────
 
@@ -799,10 +880,10 @@ func _process(delta: float) -> void:
 	_prompt_label.text = ""
 	if phase == Phase.ROUND:
 		_update_rescue(delta)
-		_update_dial(delta)
+		_update_objectives(delta)
 		_update_prompts()
-		# Escape: through the unlocked front door, out into the night.
-		if not _door_locked and _player.global_position.z > _escape_z \
+		# Escape: through any unlocked exit, out into the night.
+		if _escape_armed and _player_at_exit() != "" \
 				and _player.state != SleepingBagPlayer.State.COCOONED:
 			if _is_authority():
 				_net_report_escape(_my_id())
@@ -814,17 +895,39 @@ func _process(delta: float) -> void:
 	_update_debug()
 	_net_tick(delta)
 
+func _update_objectives(delta: float) -> void:
+	var p := _player.global_position
+	for o: Objective in _objectives:
+		var near_count := _bodies_near(o.def.action_spot, Objective.NEAR)
+		o.update(delta, p, near_count)
+	# The one open entry panel (phone / keypad / fuse box) drives the panel UI.
+	var entry := _active_entry()
+	if entry != null:
+		_phone_panel.visible = true
+		_phone_label.text = entry.panel_text()
+	else:
+		_phone_panel.visible = false
+
+func _bodies_near(pos: Vector3, r: float) -> int:
+	var n := 0
+	if _player.global_position.distance_to(pos) < r:
+		n += 1
+	for pid: int in _remote_bags:
+		if _remote_bags[pid].global_position.distance_to(pos) < r:
+			n += 1
+	return n
+
 func _update_prompts() -> void:
 	if _rescue_target != null:
 		if not Input.is_key_pressed(KEY_E):
 			_prompt_label.text = "HOLD E TO RESCUE"
 		return
-	if _note_node != null \
-			and _player.global_position.distance_to(_note_node.global_position) < 1.8:
-		_prompt_label.text = "E: READ NOTE"
-	elif _phone_node != null \
-			and _player.global_position.distance_to(_phone_node.global_position) < 2.0:
-		_prompt_label.text = "E: USE PHONE"
+	var p := _player.global_position
+	for o: Objective in _objectives:
+		var pr := o.prompt(p)
+		if pr != "":
+			_prompt_label.text = pr
+			return
 
 func _update_phase(delta: float) -> void:
 	var is_authority := _is_authority()
@@ -1004,7 +1107,9 @@ func _on_lobby_ready(lobby_id: int, is_host: bool) -> void:
 	elif lobby_id == -1 and is_host:
 		# Test mode host: quick round, auto-start.
 		lights_out_duration = 1.5
-		get_tree().create_timer(1.5).timeout.connect(_host_start_round)
+		# Wait for the client to finish connecting so it's present for the
+		# LIGHTS_OUT objective broadcast (real play readies up in the lobby).
+		get_tree().create_timer(4.0).timeout.connect(_host_start_round)
 		var diag := Timer.new()
 		diag.wait_time = 2.0
 		diag.autostart = true

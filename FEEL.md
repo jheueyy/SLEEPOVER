@@ -113,12 +113,34 @@ ASLEEP → PATROL → INVESTIGATE → CHASE → LUNGE.
 | `rescue_time` | 5.0 | hold-E seconds to free them (return at 2 pips) |
 | `rescue_zipper_at` | 3.0 | secs into a rescue the LOUD zipper ping fires |
 | `zipper_loudness` | 0.9 | that ping's loudness (pulls the monster back) |
-| `dial_time` | 1.5 | secs per rotary digit (each = loud click ping) |
-| `dial_loudness` | 0.8 | the dial-click ping loudness |
 
-> Endings: **ESCAPE** (dial the landline number → front door unlocks → walk out),
+> Endings: **ESCAPE** (complete 3 objectives → exits unlock → walk out any exit),
 > **SUNRISE** (survive the timer), **LOSS** (everyone cocooned). Host-authoritative
 > over Steam; host presses ENTER in lobby/results to advance.
+
+## Objectives (`games/sleepover/ObjectiveDef.gd` + `Objective.gd`)
+Each round the host draws a random **5 of 6**; completing **any 3** arms escape
+and unlocks all three exits (front door, garage, basement window). Every objective
+is a CLUE → ACTION pair with a randomized clue spot; ACTIONs emit NoiseBus pings.
+
+| Objective | Kind | Action | Noise (sound / loudness) |
+|---|---|---|---|
+| The Landline | code 4 | read note → rotary-dial (1.5s/digit, wrong resets) | click / 0.8 |
+| The Garage Code | code 4 | read birthday → keypad (wrong = loud beep) | beep / 0.85 |
+| The Breaker | code 3 | read garage diagram → set fuse colours (keys 1-3) in basement | clatter / 0.85 |
+| The Dog Has The Keys | reach | grab pantry snack → reach the wandering dog | bark / 0.7 (barks every 4s on its own) |
+| The Deadbolt | 2-player | two bodies at the back door, hold E 3s | click / 0.5 |
+| The Glasses | find | one random player's screen is BLURRED until they find their glasses | click / 0.25 |
+
+- `Objective.NEAR` = 2.0m interaction reach; `Objective.DIAL_TIME` = 1.5s rotary windup.
+- Deadbolt `solve_secs` = 3.0. Glasses blur is a full-screen box-blur post-process
+  on only the assigned player; clears on pickup.
+- Tuning per-objective solve params lives on the factory methods in `ObjectiveDef.gd`
+  (clue pools, action spots, code lengths, `noise_loudness`); exit zones + door
+  blockers in `HouseSuburban.EXITS`.
+- Known gray-box limitation: the dog runs a deterministic local sim on each peer
+  (same path/speed), so its position can drift slightly between machines — fine
+  for gray-box, revisit with host-owned sync in the art pass.
 
 ---
 
@@ -159,12 +181,14 @@ game; if a tuning change removes it, revert.
 
 ## Noise ladder (what the monster hears, loudest first)
 ```
-hop landing (1.0)  ≈  zipper/rescue (0.9)  >  tumble crash (0.8)  ≈  phone dial (0.8)
-   >  leaving a hide spot (0.3)  >  shuffle (0.0 — silent)
+hop landing (1.0)  ≈  zipper/rescue (0.9)  >  garage beep (0.85) ≈ breaker clatter (0.85)
+   >  tumble crash (0.8) ≈ phone dial (0.8)  >  dog bark (0.7)  >  deadbolt (0.5)
+   >  leaving a hide spot (0.3)  >  glasses grab (0.25)  >  shuffle (0.0 — silent)
 ```
 Every ping carries a loudness that scales the effective hearing radius, so a
 zipper across the house pulls the monster off you, and a quiet rustle leaving a
 closet barely registers. Constants: `land_loudness`/`tumble_loudness` (Player),
-`zipper_loudness`/`dial_loudness` (Main), hide-exit ping hardcoded 0.3 in Main.
+`zipper_loudness` (Main), objective `noise_loudness` (ObjectiveDef factories),
+hide-exit ping hardcoded 0.3 in Main.
 > Mic-as-noise was removed (2026-07-08 playtest decision). An archived copy of
 > `MicMonitor.gd` exists outside the project if it's ever revisited.
