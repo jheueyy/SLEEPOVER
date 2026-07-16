@@ -133,6 +133,14 @@ ASLEEP → PATROL → INVESTIGATE → CHASE → LUNGE.
 > Endings: **ESCAPE** (complete 3 objectives → exits unlock → walk out any exit),
 > **SUNRISE** (survive the timer), **LOSS** (everyone cocooned). Host-authoritative
 > over Steam; host presses ENTER in lobby/results to advance.
+>
+> **HUD objective tracker** (top-right): lists the round's 5 objectives by name
+> with `[x]`/`[~]`/`[ ]` (done / in progress / not started) and an `ESCAPE X/3`
+> counter (round timer is the top-center clock). Two-stage reveal — a code
+> objective (Landline/Garage/Breaker) shows only its NAME until a player reads
+> its clue, then the action detail (`dial 5 5 2 1`) appears on every HUD (reveal
+> is host-owned + synced). It shows WHAT and WHETHER, **never WHERE** — no map,
+> markers, or locations; finding and shouting spots over voice is the gameplay.
 
 ## Objectives (`games/sleepover/ObjectiveDef.gd` + `Objective.gd`)
 Each round the host draws a random **5 of 6**; completing **any 3** arms escape

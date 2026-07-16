@@ -46,6 +46,7 @@ var _net_label: Label
 var _toast: Label
 var _clock_label: Label
 var _prompt_label: Label
+var _tracker_label: Label
 var _debug_label: Label
 var _pips: Array[ColorRect] = []
 var _cocoon_overlay: Control
@@ -209,6 +210,28 @@ func _run_selftest() -> void:
 	print("[SELFTEST] randomization: %d distinct layouts across 6 rolls" % layouts.size())
 	pass_all = pass_all and ok_varied
 
+	# 8. TRACKER TWO-STAGE REVEAL. A code objective hides its detail until the
+	# clue is read; a no-secret objective shows its detail from the start; the
+	# reveal syncs (via _apply_reveal); and no tracker line ever names a location.
+	_apply_phase(Phase.LOBBY, {})
+	_apply_phase(Phase.LIGHTS_OUT, {"objs": [
+		{"id": "landline", "clue": 0, "code": "5521"},
+		{"id": "deadbolt"}], "blurred": 0})
+	_apply_phase(Phase.ROUND, {})
+	var landline: Objective = _objectives[0]
+	var deadbolt: Objective = _objectives[1]
+	var code_secret := not landline.is_revealed()  # detail hidden until clue read
+	var deadbolt_open := deadbolt.is_revealed()    # no secret -> shown from start
+	_apply_reveal("landline")
+	var revealed_after := landline.is_revealed() and landline.tracker_detail().contains("5 5 2 1")
+	# WHERE-check: the built tracker text must not leak any spawn coordinate.
+	_update_tracker()
+	var no_location := not _tracker_label.text.to_lower().contains("vector") \
+		and not _tracker_label.text.contains(str(int(HouseSuburban.CLUE_SPOTS[0].x * HouseSuburban.S)))
+	print("[SELFTEST] tracker: code-hidden=%s no-secret-shown=%s reveals=%s no-location=%s" % [
+		code_secret, deadbolt_open, revealed_after, no_location])
+	pass_all = pass_all and code_secret and deadbolt_open and revealed_after and no_location
+
 	print("[SELFTEST] RESULT: %s" % ("ALL PASS" if pass_all else "FAIL"))
 	get_tree().quit(0 if pass_all else 1)
 
@@ -349,10 +372,19 @@ func _build_hud() -> void:
 	_prompt_label.add_theme_color_override("font_color", Color(1.0, 0.95, 0.6))
 	layer.add_child(_prompt_label)
 
+	# Objective tracker, top-right: WHAT + WHETHER, never WHERE. Names show first;
+	# the action detail appears only after a player finds that objective's clue.
+	_tracker_label = Label.new()
+	_tracker_label.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	_tracker_label.position = Vector2(-330, 40)
+	_tracker_label.custom_minimum_size = Vector2(314, 160)
+	_tracker_label.add_theme_font_size_override("font_size", 17)
+	layer.add_child(_tracker_label)
+
 	_debug_label = Label.new()
 	_debug_label.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	_debug_label.position = Vector2(-360, 12)
-	_debug_label.custom_minimum_size = Vector2(340, 100)
+	_debug_label.position = Vector2(-330, 220)
+	_debug_label.custom_minimum_size = Vector2(314, 100)
 	_debug_label.visible = false
 	_debug_label.add_theme_color_override("font_color", Color(0.4, 1.0, 0.5))
 	layer.add_child(_debug_label)
@@ -583,6 +615,7 @@ func _setup_objectives(data: Dictionary) -> void:
 		var is_glasses := def.kind == ObjectiveDef.Kind.GLASSES
 		o.setup(def, entry, blurred_me and is_glasses)
 		o.completed.connect(_on_objective_completed)
+		o.revealed.connect(_on_objective_revealed)
 		o.action_noise.connect(func(pos: Vector3, loud: float) -> void: NoiseBus.emit_noise(pos, loud))
 		o.toast.connect(func(t: String) -> void: _show_toast(t, 5.0))
 		_objectives.append(o)
@@ -603,6 +636,29 @@ func _has_objective(kind: int) -> bool:
 		if o.def.kind == kind:
 			return true
 	return false
+
+func _on_objective_revealed(id: String) -> void:
+	# A player read a clue — reveal the action detail on every HUD (host-owned).
+	if _is_authority():
+		_net_reveal.rpc(id)
+		_apply_reveal(id)
+	else:
+		_report_reveal.rpc_id(1, id)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _report_reveal(id: String) -> void:
+	if _is_authority():
+		_net_reveal.rpc(id)
+		_apply_reveal(id)
+
+@rpc("authority", "call_remote", "reliable")
+func _net_reveal(id: String) -> void:
+	_apply_reveal(id)
+
+func _apply_reveal(id: String) -> void:
+	for o: Objective in _objectives:
+		if o.def.id == id:
+			o.set_revealed()
 
 func _on_objective_completed(id: String) -> void:
 	if _is_authority():
@@ -881,6 +937,9 @@ func _process(delta: float) -> void:
 		_update_rescue(delta)
 		_update_objectives(delta)
 		_update_prompts()
+		_update_tracker()
+	else:
+		_tracker_label.text = ""
 		# Escape: through any unlocked exit, out into the night.
 		if _escape_armed and _player_at_exit() != "" \
 				and _player.state != SleepingBagPlayer.State.COCOONED:
@@ -927,6 +986,21 @@ func _update_prompts() -> void:
 		if pr != "":
 			_prompt_label.text = pr
 			return
+
+func _update_tracker() -> void:
+	# WHAT + WHETHER, never WHERE. Name only until a clue is found; then the
+	# action detail. State: [x] done, [~] in progress, [ ] not started.
+	var text := "ESCAPE  %d / 3 tasks\n" % mini(_done_ids.size(), 3)
+	for o: Objective in _objectives:
+		var box := " "
+		match o.tracker_state():
+			Objective.Tracker.DONE: box = "x"
+			Objective.Tracker.IN_PROGRESS: box = "~"
+		var line := "[%s] %s" % [box, o.def.display_name]
+		if o.is_revealed() and o.tracker_state() != Objective.Tracker.DONE:
+			line += "  —  " + o.tracker_detail()
+		text += line + "\n"
+	_tracker_label.text = text
 
 func _update_phase(delta: float) -> void:
 	var is_authority := _is_authority()

@@ -9,6 +9,9 @@ extends Node3D
 signal completed(id: String)
 signal action_noise(pos: Vector3, loudness: float)
 signal toast(text: String)
+signal revealed(id: String)   ## a player read this objective's clue (HUD reveal)
+
+enum Tracker { NOT_STARTED, IN_PROGRESS, DONE }
 
 const NEAR := 2.0        ## interaction reach (m)
 const DIAL_TIME := 1.5   ## landline per-digit rotary windup
@@ -170,7 +173,9 @@ func try_interact(player_pos: Vector3) -> bool:
 		ObjectiveDef.Kind.LANDLINE, ObjectiveDef.Kind.GARAGE_CODE, ObjectiveDef.Kind.BREAKER:
 			if _clue != null and _near(_clue.position, player_pos):
 				toast.emit("%s: %s" % [def.display_name, _clue_text()])
-				_revealed = true
+				if not _revealed:
+					_revealed = true
+					revealed.emit(def.id)  # HUD reveals the action detail everywhere
 				return true
 			if _action != null and _near(_action.position, player_pos):
 				_panel_open = not _panel_open
@@ -256,12 +261,68 @@ func _clue_text() -> String:
 		ObjectiveDef.Kind.LANDLINE, ObjectiveDef.Kind.GARAGE_CODE:
 			return "the number is  %s" % seed.get("code", "????")
 		ObjectiveDef.Kind.BREAKER:
-			var names := ["", "RED", "GRN", "BLU"]
-			var order := ""
-			for ch in str(seed.get("code", "")):
-				order += names[int(String(ch))] + " "
-			return "fuse order:  %s" % order
+			return "fuse order:  %s" % _colour_order()
 	return "?"
+
+func _colour_order() -> String:
+	var names := ["", "RED", "GRN", "BLU"]
+	var order := ""
+	for ch in str(seed.get("code", "")):
+		order += names[int(String(ch))] + " "
+	return order.strip_edges()
+
+# ── HUD tracker (WHAT + WHETHER; never WHERE) ──────────────────────────────
+
+func set_revealed() -> void:
+	_revealed = true  # synced reveal from another player finding the clue
+
+func has_secret() -> bool:
+	# Code objectives hide their action detail until a clue is found; the rest
+	# have no secret, so the tracker shows their instruction from the start.
+	return def.kind in [ObjectiveDef.Kind.LANDLINE, ObjectiveDef.Kind.GARAGE_CODE,
+		ObjectiveDef.Kind.BREAKER]
+
+func is_revealed() -> bool:
+	return _revealed or not has_secret()
+
+func tracker_state() -> Tracker:
+	if done:
+		return Tracker.DONE
+	match def.kind:
+		ObjectiveDef.Kind.LANDLINE, ObjectiveDef.Kind.GARAGE_CODE, ObjectiveDef.Kind.BREAKER:
+			return Tracker.IN_PROGRESS if (_revealed or _entry.length() > 0) else Tracker.NOT_STARTED
+		ObjectiveDef.Kind.DOG:
+			return Tracker.IN_PROGRESS if _has_snack else Tracker.NOT_STARTED
+		ObjectiveDef.Kind.DEADBOLT:
+			return Tracker.IN_PROGRESS if _hold_t > 0.0 else Tracker.NOT_STARTED
+		ObjectiveDef.Kind.GLASSES:
+			return Tracker.IN_PROGRESS if blurred_is_me else Tracker.NOT_STARTED
+	return Tracker.NOT_STARTED
+
+## Action detail line for the HUD — only meaningful once is_revealed(). Never
+## contains a location; it is WHAT to do, discovered by finding the clue.
+func tracker_detail() -> String:
+	match def.kind:
+		ObjectiveDef.Kind.LANDLINE:
+			return "dial %s" % _spaced(str(seed.get("code", "")))
+		ObjectiveDef.Kind.GARAGE_CODE:
+			return "code %s" % _spaced(str(seed.get("code", "")))
+		ObjectiveDef.Kind.BREAKER:
+			return "fuses %s" % _colour_order()
+		ObjectiveDef.Kind.DOG:
+			return "lure the dog with the pantry snack"
+		ObjectiveDef.Kind.DEADBOLT:
+			return "back door — 2 players, hold E"
+		ObjectiveDef.Kind.GLASSES:
+			return "you're the blurry one — find your glasses" if blurred_is_me \
+				else "someone lost their glasses"
+	return ""
+
+func _spaced(s: String) -> String:
+	var out := ""
+	for ch in s:
+		out += ch + " "
+	return out.strip_edges()
 
 func _finish() -> void:
 	if done:
