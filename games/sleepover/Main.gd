@@ -167,6 +167,17 @@ func _run_selftest() -> void:
 	print("[SELFTEST] hiding: excluded while hidden=%s, detectable after=%s" % [hidden_excluded, visible_again])
 	pass_all = pass_all and hidden_excluded and visible_again
 
+	# 5. DIAL INPUT. Both the number row and the numeric keypad must map to
+	# digits; everything else must be ignored.
+	var row_ok := true
+	var kp_ok := true
+	for d in 10:
+		row_ok = row_ok and _keycode_to_digit(KEY_0 + d) == d
+		kp_ok = kp_ok and _keycode_to_digit(KEY_KP_0 + d) == d
+	var reject_ok := _keycode_to_digit(KEY_A) == -1 and _keycode_to_digit(KEY_SPACE) == -1
+	print("[SELFTEST] dial input: numberrow=%s keypad=%s rejects-others=%s" % [row_ok, kp_ok, reject_ok])
+	pass_all = pass_all and row_ok and kp_ok and reject_ok
+
 	print("[SELFTEST] RESULT: %s" % ("ALL PASS" if pass_all else "FAIL"))
 	get_tree().quit(0 if pass_all else 1)
 
@@ -703,10 +714,20 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_E:
 				_try_interact_press()
 			_:
-				if _phone_panel.visible and event.keycode >= KEY_0 and event.keycode <= KEY_9:
-					_dial_press(event.keycode - KEY_0)
+				if _phone_panel.visible:
+					var digit := _keycode_to_digit(event.keycode)
+					if digit != -1:
+						_dial_press(digit)
 	elif event is InputEventMouseButton and event.pressed:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+# Number-row (KEY_0..KEY_9) AND numeric keypad (KEY_KP_0..KEY_KP_9) both dial.
+func _keycode_to_digit(kc: int) -> int:
+	if kc >= KEY_0 and kc <= KEY_9:
+		return kc - KEY_0
+	if kc >= KEY_KP_0 and kc <= KEY_KP_9:
+		return kc - KEY_KP_0
+	return -1
 
 func _try_interact_press() -> void:
 	if phase != Phase.ROUND or _player.state == SleepingBagPlayer.State.COCOONED:
