@@ -69,39 +69,56 @@ engine works.
 
 ---
 
-## Monster (`games/sleepover/Monster.gd`) — Patrol → Investigate → Chase
+## Monster (`games/sleepover/Monster.gd`) — senses-only AI
+**The monster NEVER reads a player position directly. Its only inputs are
+NoiseBus pings and line-of-sight checks.** State machine:
+ASLEEP → PATROL → INVESTIGATE → CHASE → LUNGE.
+
 | Constant | Default | What it does | Design rule |
 |---|---|---|---|
-| `move_speed` | 2.6 | chase speed | **faster than shuffle, slower than a hop chain** — 3.3 → 3.0 → 2.6 via playtests |
-| `wake_delay` | 40.0 | secs asleep in the attic at round start | the exploration grace — ends with a screen toast |
-| `hearing_radius` | 14.0 | how far a noise ping reaches it | was 40 (whole house = no exploration); room-scale now |
-| `chase_trigger_range` | 6.0 | ping this close to it = instant CHASE | distant noise only gets investigated |
-| `proximity_sense` | 3.5 | it just *knows* you're there this close | escalates an investigate into a chase |
-| `chase_memory` | 10.0 | secs of no contact before it loses you | was 6 — house has too many corners, escapes were free |
-| `sight_range` | 7.0 | sees MOVING players this far ahead | short on purpose — hearing stays the main sense |
-| `sight_fov_deg` | 120.0 | vision cone around its heading | it only sees where it's going |
-| `sight_min_speed` | 0.6 | move slower than this = invisible | **FREEZE to hide** — the "don't. move." mechanic |
-| `turn_rate` | 2.5 | how fast it changes direction | lower = more committed = jukeable; raise if dodging feels free |
-| `track_interval` | 0.4 | secs between position snapshots in CHASE | it aims where you WERE — raise to make sidesteps stronger |
-| `patrol_span` | 6.0 | idle wander distance | cosmetic for the kill test |
+| `move_speed` | 2.6 | CHASE speed | **> shuffle (2.0), < hop chain (~3.6)** — escapes are stamina-bound |
+| `patrol_speed_mult` | 0.45 | PATROL crawl ÷ move_speed | slow lap so you hear it coming |
+| `wake_delay` | 40.0 | secs asleep at round start | exploration grace (round loop overrides to lights-out) |
+| `hearing_radius` | 14.0 | how far a full-loudness ping reaches | scaled by ping loudness; room-scale, not house-scale |
+| `investigate_time` | 8.0 | secs spent searching a ping site | then it gives up and patrols |
+| `pings_to_chase` | 3 | pings within `ping_window` = instant CHASE | panic-spamming hops summons it |
+| `ping_window` | 10.0 | secs the ping counter remembers | — |
+| `chase_memory` | 12.0 | secs of no sight/ping before the trail dies | THE near-miss lever — spec wants ~60% escapes |
+| `sight_range` | 8.0 | darkness-adjusted eyes | short on purpose — hearing is the main sense |
+| `sight_fov_deg` | 120.0 | vision cone around its heading | it only sees where it's going; walls block it |
+| `sight_min_speed` | 0.6 | move slower than this = invisible | **FREEZE to hide** (also: hide volumes, cocooned) |
+| `turn_rate` | 2.5 | heading turn speed (rad/s) | lower = more committed = jukeable |
+| `lunge_range` | 3.0 | CHASE + LOS inside this = LUNGE | — |
+| `lunge_windup` | 0.4 | stationary screech before the burst | your window to break the line |
+| `lunge_speed_mult` | 2.3 | burst speed ÷ move_speed | — |
+| `lunge_hit_radius` | 1.1 | connect distance = COCOON | — |
+| `lunge_cooldown` | 1.6 | recovery after a miss | a missed lunge buys you time |
 
-> Chase rules: once it's locked on it tracks your LIVE position — going silent
-> does not break a chase. Any ping, getting within `proximity_sense`, or being
-> SEEN moving refreshes its memory; it only gives up after `chase_memory` secs
-> of zero contact, then checks your last known position before returning to
-> patrol.
+> **Detection rules.** PATROL: a lone ping → INVESTIGATE; 3 pings in 10s → CHASE.
+> INVESTIGATE: walk to the ping, search 8s; a *second* ping → CHASE. CHASE: hunts
+> the LAST KNOWN position (only sight or a fresh ping updates it — going silent
+> AND still AND out of sight for 12s loses it). Sight is motion-gated: freeze and
+> it looks through you; hide volumes and cocooned bags are unseeable.
 >
-> Sight is deliberately weaker than hearing (spec: hunts by noise, not sight
-> cones): short range, only in its heading direction, walls block it, and it
-> ONLY detects movement — holding still renders you invisible even in the open.
->
-> Movement is navmesh-routed (baked from the gray-box at startup) and the body
-> has NO world collision — geometry can never block or snag it. It walks the
-> path with its feet snapped to the surface underfoot, so it climbs stairs
-> tread by tread. It sleeps in the ATTIC for `wake_delay` seconds (deaf, blind,
-> motionless — the exploration window), then wakes with a toast on every
-> player's screen and patrols from up there. Round flow: explore quietly →
-> "...something in the attic just woke up." → movement discipline matters.
+> Movement is navmesh-routed, collision-free (geometry can't block it), feet
+> snapped to the visible treads so it walks stairs. In the round loop it sleeps
+> through LIGHTS OUT and wakes when the round begins.
+
+## Round loop (`games/sleepover/Main.gd`)
+| Constant | Default | What it does |
+|---|---|---|
+| `lights_out_duration` | 10.0 | ready-up → dark countdown (monster asleep) |
+| `round_duration` | 600.0 | 10-min night; survive to SUNRISE win |
+| `rescue_range` | 1.9 | how close to unzip a cocooned friend |
+| `rescue_time` | 5.0 | hold-E seconds to free them (return at 2 pips) |
+| `rescue_zipper_at` | 3.0 | secs into a rescue the LOUD zipper ping fires |
+| `zipper_loudness` | 0.9 | that ping's loudness (pulls the monster back) |
+| `dial_time` | 1.5 | secs per rotary digit (each = loud click ping) |
+| `dial_loudness` | 0.8 | the dial-click ping loudness |
+
+> Endings: **ESCAPE** (dial the landline number → front door unlocks → walk out),
+> **SUNRISE** (survive the timer), **LOSS** (everyone cocooned). Host-authoritative
+> over Steam; host presses ENTER in lobby/results to advance.
 
 ---
 
@@ -142,7 +159,12 @@ game; if a tuning change removes it, revert.
 
 ## Noise ladder (what the monster hears, loudest first)
 ```
-hop landing (1.0)  >  tumble crash (0.8)  >  shuffle (0.0 — silent)
+hop landing (1.0)  ≈  zipper/rescue (0.9)  >  tumble crash (0.8)  ≈  phone dial (0.8)
+   >  leaving a hide spot (0.3)  >  shuffle (0.0 — silent)
 ```
+Every ping carries a loudness that scales the effective hearing radius, so a
+zipper across the house pulls the monster off you, and a quiet rustle leaving a
+closet barely registers. Constants: `land_loudness`/`tumble_loudness` (Player),
+`zipper_loudness`/`dial_loudness` (Main), hide-exit ping hardcoded 0.3 in Main.
 > Mic-as-noise was removed (2026-07-08 playtest decision). An archived copy of
 > `MicMonitor.gd` exists outside the project if it's ever revisited.

@@ -1,89 +1,98 @@
 extends CharacterBody3D
 class_name NoiseMonster
-## Placeholder "Housesitter": a red cube with the real Patrol -> Investigate ->
-## Chase state machine (spec 3.4). It hears noise pings (hop thumps, tumbles):
-##   PATROL      — slow wander around its haunt
-##   INVESTIGATE — path to the last ping's location; arrive quietly = give up
-##   CHASE       — locked onto the PLAYER, tracks their live position. Entered
-##                 when a ping happens close to it, or it gets near enough while
-##                 investigating. Going silent does NOT break a chase — it only
-##                 gives up after `chase_memory` secs without any contact.
-## Movement is navmesh-routed (baked by Main from the house gray-box) and the
-## body has NO world collision — the path decides where it goes, so doorways,
-## stairs, and floor changes can never physically block it. It walks the path
-## horizontally with its feet snapped to the surface underfoot, so it visibly
-## climbs stairs tread by tread instead of floating.
-## Touch the player = caught (Main's distance check handles the freeze).
+## The Housesitter. SENSES-ONLY AI: it never reads a player position directly —
+## its ONLY inputs are NoiseBus pings and line-of-sight checks. State machine:
+##   ASLEEP      — round hasn't started (wake_delay); deaf, blind, motionless
+##   PATROL      — walks a waypoint lap through the house, humming a lullaby
+##   INVESTIGATE — walks to a ping, searches ~investigate_time; a second ping
+##                 while investigating escalates straight to CHASE
+##   CHASE       — hunts the LAST KNOWN position (updated only by sight/pings);
+##                 loses the trail after chase_memory secs of no contact
+##   LUNGE       — within lunge_range with line of sight: windup screech, then
+##                 a straight burst. Connecting = the victim is COCOONED.
+## Movement is navmesh-routed and collision-free; feet snap to the visible
+## treads. Main supplies targets, patrol points, and handles cocooning.
 
-signal woke_up  ## fired once when the wake_delay grace period ends
+signal woke_up
+signal state_changed(new_state: int)
+signal lunged_hit(target: Node3D)
 
-@export var move_speed: float = 2.6        ## faster than shuffle, loses to a hop chain
-@export var wake_delay: float = 40.0       ## secs asleep at round start — the exploration grace
-@export var hearing_radius: float = 14.0   ## room-scale ears, not house-scale (was 40)
-@export var patrol_span: float = 6.0       ## idle back-and-forth distance
-@export var chase_trigger_range: float = 6.0 ## ping this close to it = instant chase
-@export var proximity_sense: float = 3.5   ## it just KNOWS you're there this close
-@export var chase_memory: float = 10.0     ## secs of no contact before it loses you
-@export var sight_range: float = 7.0       ## it SEES moving players this far ahead
+@export var move_speed: float = 2.6        ## chase speed: > shuffle (2.0), < hop chain (~3.6). FEEL.md
+@export var patrol_speed_mult: float = 0.45 ## patrol crawl, relative to move_speed
+@export var wake_delay: float = 40.0       ## secs asleep at round start
+@export var hearing_radius: float = 14.0   ## pings farther than this don't exist
+@export var investigate_time: float = 8.0  ## secs spent searching a ping site
+@export var pings_to_chase: int = 3        ## this many pings within ping_window = chase
+@export var ping_window: float = 10.0
+@export var chase_memory: float = 12.0     ## secs of no sight/ping before the trail dies
+@export var sight_range: float = 8.0       ## darkness-adjusted eyes — short on purpose
 @export var sight_fov_deg: float = 120.0   ## vision cone around its heading
 @export var sight_min_speed: float = 0.6   ## slower than this = invisible. FREEZE to hide.
-@export var turn_rate: float = 2.5         ## heading turn speed in rad/s (~143°/s) — lower = more committed, easier to juke
-@export var track_interval: float = 0.4    ## secs between "where are they now" checks — it aims where you WERE
+@export var turn_rate: float = 2.5         ## heading turn speed, rad/s — juke window
+@export var lunge_range: float = 3.0       ## chase + LOS inside this = lunge
+@export var lunge_windup: float = 0.4      ## stationary screech before the burst
+@export var lunge_speed_mult: float = 2.3  ## burst speed multiplier
+@export var lunge_hit_radius: float = 1.1  ## connect distance = cocoon
+@export var lunge_cooldown: float = 1.6    ## recovery after a miss
 
-enum State { PATROL, INVESTIGATE, CHASE }
-
-var player: Node3D                         ## set by Main — chase target
-
-var _asleep: bool = true
-var _wake_timer: float = 0.0
-var _state: State = State.PATROL
-var _chase_timer: float = 0.0
-var _tracked_pos: Vector3          ## stale snapshot of the player it aims at
-var _track_cd: float = 0.0
-var _target: Vector3
-var _has_target: bool = false
-var _patrol_origin: Vector3
-var _patrol_dir: float = 1.0
-var debug_nav: bool = false        ## loopback test mode: dump path state
-var _spawn: Transform3D
-var _move_dir: Vector3 = Vector3.ZERO  ## smoothed heading along the nav path
-# Manual path following (NavigationAgent3D advances waypoints by 3D distance,
-# which deadlocks on descents — a waypoint 3m below is "never reached" when
-# you're standing right above it. We advance by HORIZONTAL distance instead;
-# the floor-snap owns the vertical.)
-var _path: PackedVector3Array = []
-var _path_i: int = 0
-var _path_goal: Vector3 = Vector3(INF, INF, INF)
-var _prev_wp: Vector3 = Vector3.ZERO  ## segment start, for vertical interpolation
-var _on_link: bool = false            ## mid floor-change: hold the path steady
-var _repath_cd: float = 0.0
-var _watched: Node3D               ## whose motion we measured last frame
-var _watched_prev: Vector3
-var _debug_tick: int = 0
+enum State { PATROL, INVESTIGATE, CHASE, LUNGE }
 
 const BODY_HEIGHT := 2.4  # tall enough to loom over 0.9m bags; hunches at doors
 
+var patrol_points: Array[Vector3] = []     ## set by Main (HouseSuburban loop)
+var get_targets: Callable                  ## set by Main; returns Array of bags
+
+var _state: State = State.PATROL
+var _asleep: bool = true
+var _wake_timer: float = 0.0
+var _patrol_i: int = 0
+var _last_known: Vector3                   ## the only "player position" it has
+var _chase_timer: float = 0.0
+var _dwell: float = 0.0
+var _ping_times: Array[float] = []
+var _lunge_t: float = 0.0
+var _lunge_dir: Vector3 = Vector3.ZERO
+var _lunge_traveled: float = 0.0
+var _lunge_cd: float = 0.0
+var _last_ping_pos: Vector3 = Vector3.ZERO
+
+# Path following (manual — see _repath; NavigationAgent3D deadlocks descents)
+var _path: PackedVector3Array = []
+var _path_i: int = 0
+var _path_goal: Vector3 = Vector3(INF, INF, INF)
+var _prev_wp: Vector3 = Vector3.ZERO
+var _on_link: bool = false
+var _repath_cd: float = 0.0
+var _move_dir: Vector3 = Vector3.ZERO
+var _facing: Vector3 = Vector3(0, 0, -1)
+
+var _spawn: Transform3D
 var _body: Node3D
+var _watched: Node3D
+var _watched_prev: Vector3
+var _hum: AudioStreamPlayer3D
+var _creak: AudioStreamPlayer3D
+var _screech: AudioStreamPlayer3D
+var _creak_cd: float = 2.0
 
 func _ready() -> void:
-	# No collision shape and no layers: the world can't stop it, only the
-	# navmesh path decides where it goes. Catching is a distance check in Main.
 	collision_layer = 0
 	collision_mask = 0
 	_build_body()
+	_build_audio()
+	_spawn = global_transform
+	_wake_timer = wake_delay
+	NoiseBus.noise_emitted.connect(_on_noise)
 
 func _build_body() -> void:
-	# The Housesitter, concept-sheet edition: a tall quilted bell of old
-	# bedding with a pale mask face. Origin sits 0.4 above the floor (the
-	# floor-snap keeps it there); the body hangs from that point.
+	# Concept sheet: a tall quilted bell of old bedding with a pale mask face.
 	_body = Node3D.new()
-	_body.position = Vector3(0, -0.4, 0)  # body base = floor
+	_body.position = Vector3(0, -0.4, 0)
 	add_child(_body)
 
 	var cloak_mat := StandardMaterial3D.new()
-	cloak_mat.albedo_color = Color(0.23, 0.13, 0.17)  # dark patchwork quilt
+	cloak_mat.albedo_color = Color(0.23, 0.13, 0.17)
 	cloak_mat.roughness = 0.95
-
 	var cloak := MeshInstance3D.new()
 	var bell := CylinderMesh.new()
 	bell.top_radius = 0.10
@@ -94,7 +103,6 @@ func _build_body() -> void:
 	cloak.set_surface_override_material(0, cloak_mat)
 	_body.add_child(cloak)
 
-	# The pale mask — the only bright thing on it. It reads in the dark.
 	var face_mat := StandardMaterial3D.new()
 	face_mat.albedo_color = Color(0.92, 0.87, 0.72)
 	face_mat.emission_enabled = true
@@ -108,7 +116,6 @@ func _build_body() -> void:
 	face.set_surface_override_material(0, face_mat)
 	_body.add_child(face)
 
-	# Hollow eye pits.
 	var pit_mat := StandardMaterial3D.new()
 	pit_mat.albedo_color = Color(0.03, 0.03, 0.04)
 	pit_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -122,148 +129,260 @@ func _build_body() -> void:
 		pit.set_surface_override_material(0, pit_mat)
 		_body.add_child(pit)
 
-	_spawn = global_transform
-	_patrol_origin = global_position
-	_wake_timer = wake_delay
-	NoiseBus.noise_emitted.connect(_on_noise)
+func _build_audio() -> void:
+	# The lullaby hum: how players track it through walls. Always on while awake.
+	_hum = AudioStreamPlayer3D.new()
+	_hum.stream = SoundKit.get_stream("hum")
+	_hum.max_distance = 18.0
+	_hum.volume_db = -6.0
+	_hum.position = Vector3(0, 1.6, 0)
+	add_child(_hum)
+
+	_creak = AudioStreamPlayer3D.new()
+	_creak.stream = SoundKit.get_stream("creak")
+	_creak.max_distance = 12.0
+	_creak.volume_db = -4.0
+	add_child(_creak)
+
+	_screech = AudioStreamPlayer3D.new()
+	_screech.stream = SoundKit.get_stream("screech")
+	_screech.max_distance = 30.0
+	_screech.volume_db = 2.0
+	add_child(_screech)
+
+# ── Public API ─────────────────────────────────────────────────────────────
 
 func set_wake(seconds: float) -> void:
 	wake_delay = seconds
 	_wake_timer = seconds
 	_asleep = seconds > 0.0
+	if _asleep and _hum.playing:
+		_hum.stop()
 
 func respawn() -> void:
 	global_transform = _spawn
-	_patrol_origin = global_position
-	_has_target = false
-	_state = State.PATROL
-	_chase_timer = 0.0
-	_move_dir = Vector3.ZERO
+	_set_state(State.PATROL)
 	_asleep = true
 	_wake_timer = wake_delay
+	_patrol_i = 0
+	_chase_timer = 0.0
+	_dwell = 0.0
+	_ping_times.clear()
+	_lunge_cd = 0.0
+	_path = PackedVector3Array()
+	_path_goal = Vector3(INF, INF, INF)
+	_move_dir = Vector3.ZERO
+	if _hum.playing:
+		_hum.stop()
+
+func get_debug_text() -> String:
+	var names := ["PATROL", "INVESTIGATE", "CHASE", "LUNGE"]
+	return "monster: %s%s\nlast ping: %v\nchase timer: %.1f  pings(10s): %d" % [
+		"ASLEEP " if _asleep else "", names[_state], _last_ping_pos,
+		_chase_timer, _ping_times.size()]
+
+# Client-side audio hooks: clients disable the monster's physics but still hear
+# it. Main relays these over RPC so the hum and stings play on every machine.
+func client_audio_wake() -> void:
+	if not _hum.playing:
+		_hum.play()
+
+func play_state_fx(s: int) -> void:
+	if s == State.LUNGE and not _screech.playing:
+		_screech.play()
+
+# ── Senses ─────────────────────────────────────────────────────────────────
 
 func _on_noise(pos: Vector3, loudness: float) -> void:
 	if _asleep or loudness <= 0.0:
 		return
-	if global_position.distance_to(pos) > hearing_radius:
+	if global_position.distance_to(pos) > hearing_radius * clampf(loudness, 0.3, 1.0):
 		return
-	_target = pos
-	_has_target = true
-	if _state == State.CHASE:
-		_chase_timer = chase_memory  # any contact keeps the chase alive
-	elif global_position.distance_to(pos) <= chase_trigger_range:
-		_state = State.CHASE        # that was CLOSE — it's on you now
-		_chase_timer = chase_memory
-		_tracked_pos = pos
-		_track_cd = track_interval
-	else:
-		_state = State.INVESTIGATE  # distant noise: go take a look
+	_last_ping_pos = pos
+	var now := Time.get_ticks_msec() / 1000.0
+	_ping_times.append(now)
+	while _ping_times.size() > 0 and now - _ping_times[0] > ping_window:
+		_ping_times.remove_at(0)
+
+	match _state:
+		State.CHASE, State.LUNGE:
+			_last_known = pos
+			_chase_timer = chase_memory
+		State.INVESTIGATE:
+			# A second noise while it's already suspicious = it KNOWS.
+			_enter_chase(pos)
+		State.PATROL:
+			if _ping_times.size() >= pings_to_chase:
+				_enter_chase(pos)
+			else:
+				_set_state(State.INVESTIGATE)
+				_last_known = pos
+				_dwell = 0.0
+
+func _check_sight(delta: float) -> void:
+	if _state == State.LUNGE:
+		return
+	for t: Node3D in _targets():
+		if _flag(t, "cocooned") or _flag(t, "hidden"):
+			continue
+		if _can_see(t, delta, true):
+			_enter_chase(t.global_position)
+			return
+
+func _can_see(t: Node3D, delta: float, need_motion: bool) -> bool:
+	var pos := t.global_position
+	var to := pos - global_position
+	if to.length() > sight_range:
+		return false
+	if need_motion:
+		# Motion-gated: freeze completely and it looks right through you.
+		if _watched != t:
+			_watched = t
+			_watched_prev = pos
+			return false
+		var speed := (pos - _watched_prev).length() / delta
+		_watched_prev = pos
+		if speed < sight_min_speed:
+			return false
+	var flat := Vector3(to.x, 0.0, to.z).normalized()
+	if flat.dot(_facing) < cos(deg_to_rad(sight_fov_deg * 0.5)):
+		return false
+	var space := get_world_3d().direct_space_state
+	var query := PhysicsRayQueryParameters3D.create(
+		global_position + Vector3.UP * 0.3, pos + Vector3.UP * 0.3, 1)
+	var hit := space.intersect_ray(query)
+	return hit.is_empty() or hit["collider"] == t
+
+func _targets() -> Array:
+	if get_targets.is_valid():
+		return get_targets.call()
+	return []
+
+func _flag(t: Node3D, flag: String) -> bool:
+	if t is SleepingBagPlayer:
+		var p := t as SleepingBagPlayer
+		return p.state == SleepingBagPlayer.State.COCOONED if flag == "cocooned" else p.hidden
+	return t.get_meta(flag, false)
+
+func _enter_chase(pos: Vector3) -> void:
+	_last_known = pos
+	_chase_timer = chase_memory
+	if _state != State.CHASE:
+		_set_state(State.CHASE)
+
+func _set_state(s: State) -> void:
+	if _state != s:
+		_state = s
+		state_changed.emit(s)
+
+# ── Brain + body ───────────────────────────────────────────────────────────
 
 func _physics_process(delta: float) -> void:
-	# Asleep at round start: deaf, blind, motionless. The exploration window.
 	if _asleep:
 		_wake_timer -= delta
 		if _wake_timer <= 0.0:
 			_asleep = false
+			_hum.play()
 			woke_up.emit()
 		return
+
+	_lunge_cd = maxf(_lunge_cd - delta, 0.0)
+	_check_sight(delta)
 
 	var goal := global_position
 	var has_goal := false
 	var speed := move_speed
 
-	# Sight: a MOVING player in front of it, close, with clear line of sight,
-	# is spotted — enters or refreshes the chase. Freeze and you're invisible.
-	if player != null and _can_see_player(delta):
-		_state = State.CHASE
-		_chase_timer = chase_memory
-		_tracked_pos = player.global_position
-		_track_cd = track_interval
-
 	match _state:
 		State.PATROL:
-			# Slow wander between two points around the haunt.
-			var p := _patrol_origin + Vector3(_patrol_dir * patrol_span, 0.0, 0.0)
-			if _flat_distance(p) < 0.8:
-				_patrol_dir *= -1.0
-				p = _patrol_origin + Vector3(_patrol_dir * patrol_span, 0.0, 0.0)
-			goal = p
-			has_goal = true
-			speed = move_speed * 0.4
+			if not patrol_points.is_empty():
+				var p := patrol_points[_patrol_i % patrol_points.size()]
+				if _flat_distance(p) < 1.2:
+					_patrol_i = (_patrol_i + 1) % patrol_points.size()
+					p = patrol_points[_patrol_i]
+				goal = p
+				has_goal = true
+				speed = move_speed * patrol_speed_mult
 
 		State.INVESTIGATE:
-			# Getting near the player mid-investigation = it notices you.
-			if player != null and global_position.distance_to(player.global_position) <= proximity_sense:
-				_state = State.CHASE
-				_chase_timer = chase_memory
-				_tracked_pos = player.global_position
-				_track_cd = track_interval
-			elif _has_target:
-				# Arrived — or the path is exhausted (target unreachable):
-				# either way, stop investigating instead of freezing forever.
-				if _flat_distance(_target) < 0.8 or _path_exhausted(_target):
-					_has_target = false
-					_state = State.PATROL  # nothing here — false alarm
-				else:
-					goal = _target
-					has_goal = true
+			if _flat_distance(_last_known) < 0.9 or _path_exhausted(_last_known):
+				# Arrived (or can't get closer): stand and search, slowly turning.
+				_dwell += delta
+				_body.rotation.y += delta * 1.4
+				_facing = -Basis(Vector3.UP, _body.rotation.y).z
+				if _dwell >= investigate_time:
+					_set_state(State.PATROL)
+					_patrol_i = _nearest_patrol_index()
 			else:
-				_state = State.PATROL
+				goal = _last_known
+				has_goal = true
 
 		State.CHASE:
-			# Locked on — but it aims at a STALE snapshot of where you were
-			# (refreshed every track_interval), so a hard sidestep can beat it.
-			if player != null:
-				if global_position.distance_to(player.global_position) <= proximity_sense:
-					_chase_timer = chase_memory
-				_track_cd -= delta
-				if _track_cd <= 0.0:
-					_tracked_pos = player.global_position
-					_track_cd = track_interval
-				goal = _tracked_pos
+			# Lunge check: close + clear line of sight (no motion gate — being
+			# frozen at point-blank mid-chase will not save you).
+			if _lunge_cd <= 0.0:
+				for t: Node3D in _targets():
+					if _flag(t, "cocooned") or _flag(t, "hidden"):
+						continue
+					if global_position.distance_to(t.global_position) <= lunge_range \
+							and _can_see(t, delta, false):
+						_set_state(State.LUNGE)
+						_lunge_t = 0.0
+						_lunge_traveled = 0.0
+						var d := t.global_position - global_position
+						_lunge_dir = Vector3(d.x, 0, d.z).normalized()
+						_screech.play()
+						break
+			if _state == State.CHASE:
+				goal = _last_known
 				has_goal = true
-			_chase_timer -= delta
-			if _chase_timer <= 0.0:
-				_state = State.INVESTIGATE  # lost you — check last known noise
+				_chase_timer -= delta
+				if _chase_timer <= 0.0:
+					_set_state(State.INVESTIGATE)
+					_dwell = 0.0
 
-	# Route the goal through the navmesh; walk it horizontally, feet planted.
-	# Turn inertia: the heading blends toward the path direction, so it can't
-	# whip around instantly — juking past it stays possible and earned.
+		State.LUNGE:
+			_lunge_t += delta
+			if _lunge_t >= lunge_windup:
+				var step := move_speed * lunge_speed_mult * delta
+				global_position += _lunge_dir * step
+				_lunge_traveled += step
+				for t: Node3D in _targets():
+					if _flag(t, "cocooned") or _flag(t, "hidden"):
+						continue
+					if global_position.distance_to(t.global_position) <= lunge_hit_radius:
+						lunged_hit.emit(t)
+						_lunge_cd = lunge_cooldown
+						_set_state(State.PATROL)
+						break
+				if _state == State.LUNGE and _lunge_traveled >= lunge_range + 1.2:
+					_lunge_cd = lunge_cooldown
+					_set_state(State.CHASE)  # missed — recover and re-track
+
+	# Route the goal through the navmesh; walk horizontally, feet planted.
 	var on_vertical_seg := false
 	if has_goal and _nav_map_ready():
 		_repath(goal)
-		# Advance waypoints by HORIZONTAL distance (see _path comment above).
-		# Each advance is progress — push the stuck-recovery heartbeat back.
 		while _path_i < _path.size() and _flat_distance(_path[_path_i]) < 0.5:
 			_prev_wp = _path[_path_i]
 			_path_i += 1
 			_repath_cd = 3.0
-		if debug_nav:
-			_debug_tick += 1
-			if _debug_tick % 120 == 0:
-				print("[NETTEST] path state=%d pos=%v wp=%d/%d goal=%v" % [
-					_state, global_position, _path_i, _path.size(), goal])
 		if _path_i < _path.size():
 			var wp := _path[_path_i]
 			var to := wp - global_position
-			to.y = 0.0  # horizontal walk; the feet find the floor below
+			to.y = 0.0
 			if to.length() > 0.02:
 				var want := to.normalized()
 				if _move_dir.length() < 0.01:
 					_move_dir = want
 				else:
-					# Rotate the heading toward the path at turn_rate rad/s.
-					# (NOT lerp+normalize — that can never turn a full 180°.)
 					var angle := _move_dir.signed_angle_to(want, Vector3.UP)
-					var step := clampf(angle, -turn_rate * delta, turn_rate * delta)
-					_move_dir = _move_dir.rotated(Vector3.UP, step).normalized()
+					var turn := clampf(angle, -turn_rate * delta, turn_rate * delta)
+					_move_dir = _move_dir.rotated(Vector3.UP, turn).normalized()
 				global_position += _move_dir * minf(speed * delta, to.length())
-			# Floor-changing segment (a stairwell link or a whole ramp in one
-			# span): interpolate height along the segment instead of snapping —
-			# the snap ray can't see the destination floor from up/down here.
-			# LATCHED on the segment's endpoints, not the current height gap:
-			# a moving chase target must never repath us mid-crossing (start
-			# snapping is ambiguous in midair and yo-yos us back up).
+				_facing = _move_dir
+			# Floor-changing segment: interpolate height along it (latched on
+			# the segment's endpoints so mid-crossing repaths can't yo-yo us).
 			if absf(wp.y - _prev_wp.y) > 1.0:
 				on_vertical_seg = true
 				var seg := _flat_between(_prev_wp, wp)
@@ -279,10 +398,7 @@ func _physics_process(delta: float) -> void:
 	_on_link = on_vertical_seg
 	_repath_cd -= delta
 
-	# Feet on the floor: snap to the surface underfoot each frame. On stairs
-	# this rides the treads step by step — it WALKS up and down, no floating.
-	# (mask 1: snaps to real geometry, never the invisible player stair ramps.
-	# Skipped mid vertical segment — the interpolation above owns the height.)
+	# Feet on the floor (skipped mid vertical segment).
 	var space := get_world_3d().direct_space_state
 	if not on_vertical_seg:
 		var query := PhysicsRayQueryParameters3D.create(
@@ -292,9 +408,8 @@ func _physics_process(delta: float) -> void:
 			var floor_y: float = hit["position"].y + 0.4
 			global_position.y = lerpf(global_position.y, floor_y, clampf(14.0 * delta, 0.0, 1.0))
 
-	# Face where it's going, and HUNCH under low clearance — a 2.4m thing
-	# folding itself through a 2m doorway is exactly the nightmare we want.
-	if _move_dir.length() > 0.1:
+	# Face where it's going; hunch under low clearance (doorways).
+	if _move_dir.length() > 0.1 and _state != State.INVESTIGATE:
 		var yaw := atan2(-_move_dir.x, -_move_dir.z)
 		_body.rotation.y = lerp_angle(_body.rotation.y, yaw, clampf(8.0 * delta, 0.0, 1.0))
 	var up_query := PhysicsRayQueryParameters3D.create(
@@ -306,41 +421,15 @@ func _physics_process(delta: float) -> void:
 	var squash := clampf((clearance - 0.1) / BODY_HEIGHT, 0.5, 1.0)
 	_body.scale.y = lerpf(_body.scale.y, squash, clampf(10.0 * delta, 0.0, 1.0))
 
-func _can_see_player(delta: float) -> bool:
-	# Measure the target's speed from position deltas (works for the local
-	# RigidBody bag AND the interpolated network ghosts alike).
-	var pos := player.global_position
-	if _watched != player:
-		_watched = player
-		_watched_prev = pos
-		return false
-	var target_speed := (pos - _watched_prev).length() / delta
-	_watched_prev = pos
-	if target_speed < sight_min_speed:
-		return false  # holding still = invisible
+	# Floorboard creaks while it moves — the "you hear it before you see it".
+	_creak_cd -= delta
+	if _creak_cd <= 0.0 and _move_dir.length() > 0.1:
+		_creak.play()
+		_creak_cd = randf_range(1.6, 3.8) * (0.55 if _state >= State.CHASE else 1.0)
 
-	var to := pos - global_position
-	if to.length() > sight_range:
-		return false
-	if _move_dir.length() < 0.1:
-		return false  # standing idle, staring at nothing
-	var flat := Vector3(to.x, 0.0, to.z).normalized()
-	if flat.dot(_move_dir) < cos(deg_to_rad(sight_fov_deg * 0.5)):
-		return false  # outside the vision cone
-
-	# Line of sight: walls block it. Ray ends at the player, so hitting the
-	# player's own body (or nothing at all, for ghosts) means a clear view.
-	var space := get_world_3d().direct_space_state
-	var query := PhysicsRayQueryParameters3D.create(
-		global_position + Vector3.UP * 0.3, pos + Vector3.UP * 0.3, 1)  # mask 1: ignore stair ramps
-	var hit := space.intersect_ray(query)
-	return hit.is_empty() or hit["collider"] == player
+# ── Path helpers ───────────────────────────────────────────────────────────
 
 func _repath(goal: Vector3) -> void:
-	# A path in progress is left alone: recompute only when the goal genuinely
-	# moved or the stuck-recovery heartbeat expires — and NEVER mid link
-	# crossing, where a fresh path can snap our hovering position back to the
-	# departure floor and yank us into an oscillation.
 	var need := _path.is_empty() \
 		or (not _on_link and (goal.distance_to(_path_goal) > 0.5 or _repath_cd <= 0.0))
 	if need:
@@ -354,6 +443,16 @@ func _repath(goal: Vector3) -> void:
 func _path_exhausted(goal: Vector3) -> bool:
 	return goal.distance_to(_path_goal) < 0.6 and _path_i >= _path.size()
 
+func _nearest_patrol_index() -> int:
+	var best := 0
+	var best_d := INF
+	for i in patrol_points.size():
+		var d := _flat_distance(patrol_points[i])
+		if d < best_d:
+			best_d = d
+			best = i
+	return best
+
 func _flat_distance(to: Vector3) -> float:
 	var d := to - global_position
 	return Vector2(d.x, d.z).length()
@@ -362,5 +461,4 @@ func _flat_between(a: Vector3, b: Vector3) -> float:
 	return Vector2(b.x - a.x, b.z - a.z).length()
 
 func _nav_map_ready() -> bool:
-	# The navmesh bakes at startup; queries before the map's first sync fail.
 	return NavigationServer3D.map_get_iteration_id(get_world_3d().navigation_map) > 0

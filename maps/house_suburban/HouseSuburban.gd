@@ -136,6 +136,46 @@ const NAV_LINKS: Array = [
 	{"from": Vector3(7.0, -2.7, -5.5), "to": Vector3(6.0, -2.7, -3.5)},
 ]
 
+# Monster patrol loop (plan x/z + REAL y of the floor): a lap through the
+# house so the hum wanders the halls. Consumed scaled via patrol_points().
+const PATROL_LOOP: Array = [
+	Vector3(-0.5, 0.5, -3.5),   # dining
+	Vector3(-5.5, 0.5, -3.5),   # kitchen
+	Vector3(-4.5, 0.5, 2.5),    # living room
+	Vector3(0.5, 0.5, 4.5),     # hall
+	Vector3(0.5, 3.5, 5.3),     # landing (upstairs)
+	Vector3(-4.5, 3.5, 3.5),    # master bed
+	Vector3(-2.0, 3.5, -0.2),   # corridor
+	Vector3(0.5, 3.5, 5.3),     # landing again, then back down
+]
+
+# Hiding volumes (plan x/z + floor y, box ~1.6 wide). Inside one and unseen =
+# the monster's sight can't find you; only a ping into your room betrays you.
+const HIDE_SPOTS: Array = [
+	Vector3(4.2, 0.0, -5.2),    # pantry corner
+	Vector3(4.2, 3.0, 1.2),     # upstairs linen closet
+	Vector3(-7.2, 3.0, 5.2),    # under the master bed
+	Vector3(5.8, -3.0, -5.2),   # basement corner
+]
+
+# The Landline objective: the note spawns at ONE of these (host picks).
+const CLUE_SPOTS: Array = [
+	Vector3(-7.4, 0.0, -5.4),   # kitchen fridge
+	Vector3(1.5, 0.0, 3.0),     # hallway table
+	Vector3(7.4, 0.0, 3.0),     # garage shelf
+	Vector3(-4.5, 0.0, 1.0),    # living room couch
+]
+const PHONE_SPOT := Vector3(1.7, 0.0, 5.4)  # hall wall by the front door
+
+static func patrol_points() -> Array[Vector3]:
+	var out: Array[Vector3] = []
+	for p: Vector3 in PATROL_LOOP:
+		out.append(Vector3(p.x * S, p.y, p.z * S))
+	return out
+
+static func scaled(p: Vector3) -> Vector3:
+	return Vector3(p.x * S, p.y, p.z * S)
+
 # Room labels: gray-box wayfinding + playtest comms ("it's in the DINING ROOM")
 const ROOMS: Array = [
 	{"name": "LIVING ROOM", "at": Vector3(-4.5, 2.2, 2.5)},
@@ -213,6 +253,54 @@ static func build(parent: Node3D) -> void:
 	for gable_x: float in [-8.0, 2.0]:
 		_box(parent, Vector3(gable_x * S, (eave_y + ridge_y) * 0.5, -3.5 * S),
 			Vector3(WALL_T, ridge_y - eave_y, 5.0 * S), COL_WALL)
+
+	# Front door: a real blocker in the doorway. Unlocking (the Landline) hides
+	# it and disables its collision; escaping means walking out through it.
+	var door := StaticBody3D.new()
+	door.add_to_group("front_door")
+	door.position = Vector3(0.5 * S, 1.0, 6.0 * S)
+	var door_shape := CollisionShape3D.new()
+	var door_box := BoxShape3D.new()
+	door_box.size = Vector3(1.2 * S, 2.0, 0.25)
+	door_shape.shape = door_box
+	door.add_child(door_shape)
+	var door_mesh := MeshInstance3D.new()
+	var door_bm := BoxMesh.new()
+	door_bm.size = door_box.size
+	door_mesh.mesh = door_bm
+	var door_mat := StandardMaterial3D.new()
+	door_mat.albedo_color = Color(0.45, 0.30, 0.16)
+	door_mesh.set_surface_override_material(0, door_mat)
+	door.add_child(door_mesh)
+	parent.add_child(door)
+
+	# Hiding volumes: translucent green nooks. Main wires their signals.
+	for hs: Vector3 in HIDE_SPOTS:
+		var area := Area3D.new()
+		area.add_to_group("hide_spot")
+		area.position = Vector3(hs.x * S, hs.y + 0.7, hs.z * S)
+		var a_shape := CollisionShape3D.new()
+		var a_box := BoxShape3D.new()
+		a_box.size = Vector3(1.7, 1.4, 1.7)
+		a_shape.shape = a_box
+		area.add_child(a_shape)
+		var a_mesh := MeshInstance3D.new()
+		var a_bm := BoxMesh.new()
+		a_bm.size = Vector3(1.7, 1.4, 1.7)
+		a_mesh.mesh = a_bm
+		var a_mat := StandardMaterial3D.new()
+		a_mat.albedo_color = Color(0.2, 0.8, 0.4, 0.18)
+		a_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		a_mesh.set_surface_override_material(0, a_mat)
+		area.add_child(a_mesh)
+		var a_label := Label3D.new()
+		a_label.text = "HIDE"
+		a_label.font_size = 40
+		a_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		a_label.modulate = Color(0.5, 1.0, 0.6, 0.6)
+		a_label.position = Vector3(0, 1.0, 0)
+		area.add_child(a_label)
+		parent.add_child(area)
 
 	for link_def: Dictionary in NAV_LINKS:
 		var link := NavigationLink3D.new()

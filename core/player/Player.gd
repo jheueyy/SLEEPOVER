@@ -42,7 +42,7 @@ class_name SleepingBagPlayer
 @export var recover_mash_kick: float = 3.0   ## righting impulse per mash
 @export var tumble_loudness: float = 0.8     ## crash ping when you go down
 
-enum State { NORMAL, TUMBLED, CAUGHT }
+enum State { NORMAL, TUMBLED, COCOONED }
 
 const DIR_KEYS := {
 	KEY_W: Vector3(0, 0, -1),
@@ -55,6 +55,8 @@ var state: State = State.NORMAL
 var control_yaw: float = 0.0             ## camera yaw, set by Main — WASD is camera-relative
 var facing: Vector3 = Vector3(0, 0, -1)  ## last direction moved; hops burst this way
 var stamina: float = 5.0
+var hidden: bool = false                 ## inside a hiding volume (Main sets it)
+var tumbles: int = 0                     ## per-round stat for the results screen
 var grounded: bool = false
 var _regen_cooldown: float = 0.0
 var recover_progress: float = 0.0
@@ -101,14 +103,23 @@ func _ready() -> void:
 
 func get_state_text() -> String:
 	match state:
-		State.CAUGHT: return "CAUGHT"
+		State.COCOONED: return ""  # the cocoon overlay carries the message
 		State.TUMBLED: return "TUMBLED — mash W/A/S/D to get up!"
 		_: return ""
 
-func set_caught() -> void:
-	state = State.CAUGHT
+func cocoon() -> void:
+	state = State.COCOONED
 	linear_velocity = Vector3.ZERO
 	angular_velocity = Vector3.ZERO
+	freeze = true
+
+func rescue() -> void:
+	# Unzipped by a friend: back in the fight with a partial tank.
+	freeze = false
+	state = State.NORMAL
+	stamina = 2.0
+	_regen_cooldown = 0.0
+	recover_progress = 0.0
 
 func set_spawn(xform: Transform3D) -> void:
 	_spawn = xform  # e.g. a network client relocated to its own spawn slot
@@ -121,8 +132,11 @@ func set_skin(skin: int) -> void:
 	add_child(_visual)
 
 func respawn() -> void:
+	freeze = false
 	state = State.NORMAL
 	stamina = stamina_max
+	hidden = false
+	tumbles = 0
 	recover_progress = 0.0
 	_regen_cooldown = 0.0
 	linear_damp = 0.0
@@ -165,7 +179,10 @@ func _physics_process(delta: float) -> void:
 			clampf(10.0 * delta, 0.0, 1.0))
 
 	match state:
-		State.CAUGHT:
+		State.COCOONED:
+			# Zipped in tight. All you can do is wiggle for attention.
+			if _visual != null:
+				_visual.rotation.z = sin(Time.get_ticks_msec() * 0.009) * 0.14
 			return
 		State.TUMBLED:
 			_process_recovery(delta)
@@ -175,7 +192,7 @@ func _physics_process(delta: float) -> void:
 	# Landing: every touchdown is a LOUD thump the monster hears — except the
 	# initial settle after (re)spawning, or the whole lobby summons it at t=0.
 	_spawn_grace = maxf(_spawn_grace - delta, 0.0)
-	if grounded and not _was_grounded and state != State.CAUGHT:
+	if grounded and not _was_grounded and state != State.COCOONED:
 		if _spawn_grace <= 0.0:
 			NoiseBus.emit_noise(global_position, land_loudness)
 		if _horizontal_speed() > land_tumble_speed and state == State.NORMAL:
@@ -256,6 +273,7 @@ func _faceplant() -> void:
 func _tumble() -> void:
 	state = State.TUMBLED
 	recover_progress = 0.0
+	tumbles += 1
 	# Fall over, don't fly: bleed momentum and turn on heavy damping so the
 	# bag flops in place instead of ragdolling across the map.
 	linear_velocity *= 0.35
