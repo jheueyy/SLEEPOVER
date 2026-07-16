@@ -100,9 +100,6 @@ func _ready() -> void:
 	_build_audio()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
-	SteamManager.lobby_ready.connect(_on_lobby_ready)
-	SteamManager.lobby_failed.connect(func(reason: String) -> void:
-		_net_label.text = "NET: " + reason)
 	multiplayer.peer_connected.connect(func(_pid: int) -> void: _update_net_label())
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	NoiseBus.noise_emitted.connect(_on_local_noise)
@@ -807,10 +804,6 @@ func _unhandled_input(event: InputEvent) -> void:
 				Input.mouse_mode = (Input.MOUSE_MODE_VISIBLE
 					if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
 					else Input.MOUSE_MODE_CAPTURED)
-			KEY_H:
-				SteamManager.host_lobby()
-			KEY_J:
-				SteamManager.join_lobby()
 			KEY_F3:
 				_debug_visible = not _debug_visible
 				_debug_label.visible = _debug_visible
@@ -1078,38 +1071,23 @@ func _on_local_noise(pos: Vector3, loudness: float) -> void:
 	if _net_connected() and not multiplayer.is_server():
 		_net_noise.rpc_id(1, pos, loudness)
 
-func _on_lobby_ready(lobby_id: int, is_host: bool) -> void:
+## Called by AppRoot once the lobby's START loads this scene on every peer.
+## The multiplayer peer already exists; here we take our network role and,
+## on the host, kick off the round once all clients report they're loaded.
+func begin(is_host: bool, is_test: bool, is_spectator: bool = false) -> void:
 	if not is_host:
 		_monster.set_physics_process(false)
 		var slot := 1 + (multiplayer.get_unique_id() % (HouseSuburban.SPAWNS.size() - 1))
 		_player.global_position = HouseSuburban.SPAWNS[slot]
 		_player.set_spawn(_player.global_transform)
 		_player.set_skin(BagVisual.skin_for_peer(multiplayer.get_unique_id()))
-	if lobby_id == -1 and not is_host:
-		# ENet loopback test mode: ping repeatedly and wander, like a player.
-		# Cocooned bots go silent and still, like a real trapped player would.
-		var ping_timer := Timer.new()
-		ping_timer.wait_time = 3.0
-		ping_timer.autostart = true
-		ping_timer.timeout.connect(func() -> void:
-			if _player.state != SleepingBagPlayer.State.COCOONED:
-				NoiseBus.emit_noise(_player.global_position, 1.0)
-				print("[NETTEST] client emitted noise ping"))
-		add_child(ping_timer)
-		var wander := Timer.new()
-		wander.wait_time = 0.15
-		wander.autostart = true
-		wander.timeout.connect(func() -> void:
-			if _player.state != SleepingBagPlayer.State.COCOONED:
-				var wt := Time.get_ticks_msec() / 1000.0
-				_player.apply_central_impulse(Vector3(sin(wt * 0.6), 0.0, cos(wt * 0.6)) * 0.8))
-		add_child(wander)
-	elif lobby_id == -1 and is_host:
-		# Test mode host: quick round, auto-start.
+	if is_spectator:
+		_become_spectator()
+
+	if is_test and not is_host:
+		_start_bot_harness()
+	elif is_test and is_host:
 		lights_out_duration = 1.5
-		# Wait for the client to finish connecting so it's present for the
-		# LIGHTS_OUT objective broadcast (real play readies up in the lobby).
-		get_tree().create_timer(4.0).timeout.connect(_host_start_round)
 		var diag := Timer.new()
 		diag.wait_time = 2.0
 		diag.autostart = true
@@ -1117,7 +1095,61 @@ func _on_lobby_ready(lobby_id: int, is_host: bool) -> void:
 			print("[NETTEST] monster at %v %s" % [_monster.global_position,
 				_monster.get_debug_text().replace("\n", " | ")]))
 		add_child(diag)
+
+	# Round start is host-authoritative AND waits for every client's game scene
+	# to load, so the LIGHTS_OUT phase RPC can't arrive before their Main exists.
+	if is_host:
+		_await_clients_then_start()
+	elif _net_connected():
+		_ack_loaded.rpc_id(1)
 	_update_net_label()
+
+var _acked_peers: Array[int] = []
+
+func _await_clients_then_start() -> void:
+	_acked_peers = [_my_id()]
+	# Fallback: start anyway after 5s in case an ack is lost.
+	get_tree().create_timer(5.0).timeout.connect(func() -> void:
+		if phase == Phase.LOBBY:
+			_host_start_round())
+	if not _net_connected() or multiplayer.get_peers().is_empty():
+		_host_start_round()
+
+@rpc("any_peer", "call_remote", "reliable")
+func _ack_loaded() -> void:
+	if not _is_authority():
+		return
+	var pid := multiplayer.get_remote_sender_id()
+	if not _acked_peers.has(pid):
+		_acked_peers.append(pid)
+	# Everyone (host + all connected peers) is in — begin the night.
+	if _acked_peers.size() >= multiplayer.get_peers().size() + 1 and phase == Phase.LOBBY:
+		_host_start_round()
+
+func _become_spectator() -> void:
+	# Joined after START: watch, don't play. Bag is hidden and inert.
+	_player.set_physics_process(false)
+	_player.visible = false
+	_show_toast("SPECTATING — you joined mid-round.", 6.0)
+
+func _start_bot_harness() -> void:
+	# ENet loopback test: ping + wander like a player (silent while cocooned).
+	var ping_timer := Timer.new()
+	ping_timer.wait_time = 3.0
+	ping_timer.autostart = true
+	ping_timer.timeout.connect(func() -> void:
+		if _player.state != SleepingBagPlayer.State.COCOONED:
+			NoiseBus.emit_noise(_player.global_position, 1.0)
+			print("[NETTEST] client emitted noise ping"))
+	add_child(ping_timer)
+	var wander := Timer.new()
+	wander.wait_time = 0.15
+	wander.autostart = true
+	wander.timeout.connect(func() -> void:
+		if _player.state != SleepingBagPlayer.State.COCOONED:
+			var wt := Time.get_ticks_msec() / 1000.0
+			_player.apply_central_impulse(Vector3(sin(wt * 0.6), 0.0, cos(wt * 0.6)) * 0.8))
+	add_child(wander)
 
 func _on_peer_disconnected(pid: int) -> void:
 	if _remote_bags.has(pid):
@@ -1139,10 +1171,10 @@ func _spawn_remote_bag(pid: int) -> Node3D:
 
 func _update_net_label() -> void:
 	if not SteamManager.steam_ok and SteamManager.lobby_id == 0:
-		_net_label.text = "NET: Steam offline — solo mode"
+		_net_label.text = "NET: solo"
 	elif SteamManager.lobby_id == 0:
-		_net_label.text = "NET: solo (%s)   H = host lobby   J = join lobby" % SteamManager.persona()
+		_net_label.text = "NET: solo (%s)" % SteamManager.persona()
 	else:
 		var role := "HOST" if SteamManager.is_host else "CLIENT"
-		_net_label.text = "NET: %s in lobby %d — %d player(s)" % [
-			role, SteamManager.lobby_id, multiplayer.get_peers().size() + 1]
+		_net_label.text = "NET: %s  code %s  — %d player(s)" % [
+			role, SteamManager.join_code, multiplayer.get_peers().size() + 1]

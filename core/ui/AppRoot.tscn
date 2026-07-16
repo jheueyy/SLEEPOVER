@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://capprootsleepover1"]
+
+[ext_resource type="Script" path="res://core/ui/AppRoot.gd" id="1_approot"]
+
+[node name="AppRoot" type="Node"]
+script = ExtResource("1_approot")

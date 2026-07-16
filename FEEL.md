@@ -104,6 +104,22 @@ ASLEEP → PATROL → INVESTIGATE → CHASE → LUNGE.
 > snapped to the visible treads so it walks stairs. In the round loop it sleeps
 > through LIGHTS OUT and wakes when the round begins.
 
+## Menu + lobby (`core/ui/AppRoot.gd`, `core/networking/`)
+| Constant | Default | What it does |
+|---|---|---|
+| `LobbyManager.MAX_PLAYERS` | 8 | lobby capacity |
+| `LobbyManager.MIN_TO_START` | 1 | players required before START enables (1 = solo playable) |
+| `SteamManager.MAX_PLAYERS` | 8 | Steam lobby size (matches the above) |
+| `SteamManager.CODE_CHARS` | A-Z2-9 (no 0/O/1/I) | the 6-char join-code alphabet |
+
+> Flow: **MAIN MENU** (Host / Join-by-code / Settings stub / Quit + overlay
+> invite) → **LOBBY** (host-authoritative roster with name + bag swatch, per-player
+> ready, all-ready enables the host's START, host-only map/monster/rules stubs,
+> Leave) → **START** loads the game on every peer and, once all clients ack their
+> scene loaded, the host begins LIGHTS OUT. Late joiners are allowed before START
+> and spectate after. Solo (Steam offline) still works: Host → 1-player lobby → START.
+> AppRoot only swaps child scenes so the Steam peer + roster persist across states.
+
 ## Round loop (`games/sleepover/Main.gd`)
 | Constant | Default | What it does |
 |---|---|---|

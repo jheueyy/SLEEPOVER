@@ -6,9 +6,9 @@ config_version=5
 
 [application]
 
-config/name="Sleepover — Week 1 Kill Test"
-config/description="Prove sleeping-bag locomotion is funny in its ugliest form."
-run/main_scene="res://games/sleepover/Main.tscn"
+config/name="Sleepover"
+config/description="Trapped. Hunted. Don't fall asleep."
+run/main_scene="res://core/ui/AppRoot.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"
 
@@ -18,6 +18,8 @@ config/icon="res://icon.svg"
 NoiseBus="*res://core/audio/NoiseBus.gd"
 ; Steam init + lobby helpers (GodotSteam). Fails soft into solo mode.
 SteamManager="*res://core/networking/SteamManager.gd"
+; Host-authoritative lobby roster/ready/start sync.
+LobbyManager="*res://core/networking/LobbyManager.gd"
 
 [navigation]
 
