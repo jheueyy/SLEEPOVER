@@ -183,16 +183,17 @@ func _run_selftest() -> void:
 	print("[SELFTEST] dial input: numberrow=%s keypad=%s rejects-others=%s" % [row_ok, kp_ok, reject_ok])
 	pass_all = pass_all and row_ok and kp_ok and reject_ok
 
-	# 6. GLASSES BLUR. A round with only the glasses objective, blurred = me:
-	# the blur overlay turns on, and clears when the glasses are picked up.
+	# 6. GLASSES. Solo (this harness has no peer): the blur must NOT show — the
+	# handicap needs teammates — but the glasses objective still completes.
 	_apply_phase(Phase.LOBBY, {})
 	_apply_phase(Phase.LIGHTS_OUT, {"objs": [{"id": "glasses", "clue": 0}], "blurred": 1})
 	_apply_phase(Phase.ROUND, {})
-	var blur_on := _blur_overlay.visible
+	var no_blur_solo := not _blur_overlay.visible
+	var glasses_completes := false
 	_authoritative_complete("glasses")
-	var blur_off := not _blur_overlay.visible
-	print("[SELFTEST] glasses: blur on for assigned player=%s, clears on pickup=%s" % [blur_on, blur_off])
-	pass_all = pass_all and blur_on and blur_off
+	glasses_completes = _done_ids.has("glasses") and not _blur_overlay.visible
+	print("[SELFTEST] glasses: solo unblurred=%s, still completable=%s" % [no_blur_solo, glasses_completes])
+	pass_all = pass_all and no_blur_solo and glasses_completes
 
 	# 7. RANDOMIZATION. Two rounds should not spawn the identical clue layout
 	# every time (spot check: object id set or a clue index differs across rolls).
@@ -367,12 +368,13 @@ func _build_hud() -> void:
 shader_type canvas_item;
 uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
 void fragment() {
-	vec2 px = 3.0 / vec2(textureSize(screen_tex, 0));
+	// Softer blur — a squint, not a whiteout. Friends still describe the room.
+	vec2 px = 1.6 / vec2(textureSize(screen_tex, 0));
 	vec4 c = vec4(0.0);
-	for (int x = -2; x <= 2; x++)
-		for (int y = -2; y <= 2; y++)
+	for (int x = -1; x <= 1; x++)
+		for (int y = -1; y <= 1; y++)
 			c += texture(screen_tex, SCREEN_UV + vec2(float(x), float(y)) * px);
-	COLOR = c / 25.0;
+	COLOR = c / 9.0;
 }
 """
 	var blur_mat := ShaderMaterial.new()
@@ -584,8 +586,12 @@ func _setup_objectives(data: Dictionary) -> void:
 		o.action_noise.connect(func(pos: Vector3, loud: float) -> void: NoiseBus.emit_noise(pos, loud))
 		o.toast.connect(func(t: String) -> void: _show_toast(t, 5.0))
 		_objectives.append(o)
-	# Blur the assigned player's screen until they find their glasses.
-	_blur_overlay.visible = blurred_me and _has_objective(ObjectiveDef.Kind.GLASSES)
+	# Blur the assigned player's screen until they find their glasses — but ONLY
+	# with 2+ players (the handicap needs teammates to describe the room). Solo,
+	# the glasses objective still spawns and is completable, just without blur.
+	var player_count := 1 + (multiplayer.get_peers().size() if _net_connected() else 0)
+	_blur_overlay.visible = blurred_me and _has_objective(ObjectiveDef.Kind.GLASSES) \
+		and player_count >= 2
 
 func _clear_objectives() -> void:
 	for o: Objective in _objectives:
