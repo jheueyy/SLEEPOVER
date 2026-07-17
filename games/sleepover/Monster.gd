@@ -34,6 +34,8 @@ signal lunged_hit(target: Node3D)
 @export var lunge_speed_mult: float = 2.3  ## burst speed multiplier
 @export var lunge_hit_radius: float = 1.1  ## connect distance = cocoon
 @export var lunge_cooldown: float = 1.6    ## recovery after a miss
+@export var shush_range: float = 4.0       ## chase + within this = it shushes you
+@export var shush_cooldown: float = 3.5    ## secs between shushes
 
 enum State { PATROL, INVESTIGATE, CHASE, LUNGE }
 
@@ -73,7 +75,9 @@ var _watched_prev: Vector3
 var _hum: AudioStreamPlayer3D
 var _creak: AudioStreamPlayer3D
 var _screech: AudioStreamPlayer3D
+var _shush: AudioStreamPlayer3D
 var _creak_cd: float = 2.0
+var _shush_cd: float = 0.0
 
 func _ready() -> void:
 	collision_layer = 0
@@ -149,6 +153,13 @@ func _build_audio() -> void:
 	_screech.max_distance = 30.0
 	_screech.volume_db = 2.0
 	add_child(_screech)
+
+	# The shush — "go to sleep" — when it corners a survivor mid-chase.
+	_shush = AudioStreamPlayer3D.new()
+	_shush.stream = SoundKit.get_stream("shush")
+	_shush.max_distance = 10.0
+	_shush.volume_db = 0.0
+	add_child(_shush)
 
 # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -426,6 +437,24 @@ func _physics_process(delta: float) -> void:
 	if _creak_cd <= 0.0 and _move_dir.length() > 0.1:
 		_creak.play()
 		_creak_cd = randf_range(1.6, 3.8) * (0.55 if _state >= State.CHASE else 1.0)
+
+	# Dread ramp: the lullaby hum SWELLS as it closes on the nearest survivor,
+	# and it SHUSHES them when it's right on top of them during a chase.
+	var nearest := _nearest_target_dist()
+	var hum_target := lerpf(-3.0, -12.0, clampf((nearest - 3.0) / 12.0, 0.0, 1.0))
+	_hum.volume_db = lerpf(_hum.volume_db, hum_target, clampf(3.0 * delta, 0.0, 1.0))
+	_shush_cd -= delta
+	if _state == State.CHASE and nearest < shush_range and _shush_cd <= 0.0:
+		_shush.play()
+		_shush_cd = shush_cooldown
+
+func _nearest_target_dist() -> float:
+	var best := INF
+	for t: Node3D in _targets():
+		if _flag(t, "cocooned"):
+			continue
+		best = minf(best, global_position.distance_to(t.global_position))
+	return best
 
 # ── Path helpers ───────────────────────────────────────────────────────────
 

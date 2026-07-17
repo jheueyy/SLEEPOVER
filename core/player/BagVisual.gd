@@ -20,8 +20,12 @@ const SKINS: Array = [
 static func skin_for_peer(peer_id: int) -> int:
 	return 0 if peer_id == 1 else peer_id % SKINS.size()
 
-## Builds the bag, base at y=0, front facing -Z. `height` ~0.9 per concept.
+## Builds the bag and returns just the visual root (eyes idle).
 static func build(height: float = 0.9, skin: int = 0) -> Node3D:
+	return build_with_eyes(height, skin)[0]
+
+## Builds the bag AND returns [root, BagEyes] so a caller can drive eye-states.
+static func build_with_eyes(height: float = 0.9, skin: int = 0) -> Array:
 	var root := Node3D.new()
 	var base_col: Color = SKINS[skin % SKINS.size()]["base"]
 
@@ -71,6 +75,14 @@ static func build(height: float = 0.9, skin: int = 0) -> Node3D:
 	var pupil_mat := StandardMaterial3D.new()
 	pupil_mat.albedo_color = Color(0.05, 0.05, 0.06)
 	pupil_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	# Eyelids: a body-coloured cap that slides down over each eye (BagEyes drives
+	# the y). Unshaded so it reads flat over the unshaded white.
+	var lid_mat := StandardMaterial3D.new()
+	lid_mat.albedo_color = base_col.darkened(0.15)
+	lid_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+
+	var pupils: Array[Node3D] = []
+	var lids: Array[Node3D] = []
 	for side: float in [-1.0, 1.0]:
 		var eye := MeshInstance3D.new()
 		var eye_mesh := SphereMesh.new()
@@ -89,5 +101,19 @@ static func build(height: float = 0.9, skin: int = 0) -> Node3D:
 		pupil.position = Vector3(side * 0.085 * height, 0.745 * height, -0.255 * height)
 		pupil.set_surface_override_material(0, pupil_mat)
 		root.add_child(pupil)
+		pupils.append(pupil)
 
-	return root
+		var lid := MeshInstance3D.new()
+		var lid_mesh := SphereMesh.new()
+		lid_mesh.radius = 0.11 * height
+		lid_mesh.height = 0.22 * height
+		lid.mesh = lid_mesh
+		# Rest position: raised above the eye (open). BagEyes lowers it to close.
+		lid.position = Vector3(side * 0.085 * height, 0.74 * height + 0.19 * height, -0.185 * height)
+		lid.set_surface_override_material(0, lid_mat)
+		root.add_child(lid)
+		lids.append(lid)
+
+	var eyes := BagEyes.new()
+	eyes.setup(pupils, lids, height)
+	return [root, eyes]

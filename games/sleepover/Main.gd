@@ -38,6 +38,7 @@ var _camera: Camera3D
 var _yaw: float = 0.0
 var _pitch: float = 0.0
 var _lookback: float = 0.0
+var _cocoon_cam: float = 0.0   ## 0 = normal chase cam, 1 = snapped inside the bag
 var _aim: MeshInstance3D
 
 # HUD
@@ -80,6 +81,8 @@ var _zip_sound: AudioStreamPlayer
 # Networking: each peer simulates its OWN bag; remote bags are ghosts.
 var _remote_bags: Dictionary = {}     ## peer_id -> Node3D ghost
 var _ghost_targets: Dictionary = {}   ## peer_id -> [pos, rot]
+var _ghost_eyes: Dictionary = {}      ## peer_id -> BagEyes
+var _ghost_mood: Dictionary = {}      ## peer_id -> synced eye mood (int)
 var _monster_target: Vector3
 var _has_monster_target: bool = false
 var _net_accum: float = 0.0
@@ -231,6 +234,22 @@ func _run_selftest() -> void:
 	print("[SELFTEST] tracker: code-hidden=%s no-secret-shown=%s reveals=%s no-location=%s" % [
 		code_secret, deadbolt_open, revealed_after, no_location])
 	pass_all = pass_all and code_secret and deadbolt_open and revealed_after and no_location
+
+	# 9. EYE-STATES. The bag's mood maps deterministically from its state.
+	_player.respawn()
+	var idle_ok := _player.eye_mood() == BagEyes.Mood.IDLE
+	_player.stamina = 0.0
+	var droop_ok := _player.eye_mood() == BagEyes.Mood.DROOP
+	_player.stamina = _player.stamina_max
+	_player.hidden = true
+	var shut_ok := _player.eye_mood() == BagEyes.Mood.SHUT
+	_player.hidden = false
+	_player.cocoon()
+	var sleepy_ok := _player.eye_mood() == BagEyes.Mood.SLEEPY
+	_player.respawn()
+	print("[SELFTEST] eye-states: idle=%s droop=%s shut=%s sleepy=%s" % [
+		idle_ok, droop_ok, shut_ok, sleepy_ok])
+	pass_all = pass_all and idle_ok and droop_ok and shut_ok and sleepy_ok
 
 	print("[SELFTEST] RESULT: %s" % ("ALL PASS" if pass_all else "FAIL"))
 	get_tree().quit(0 if pass_all else 1)
@@ -932,6 +951,8 @@ func _process(delta: float) -> void:
 	for i in range(_pips.size()):
 		_pips[i].color = PIP_ON if _player.stamina >= float(i + 1) else PIP_OFF
 
+	_update_eyes(delta)
+
 	_prompt_label.text = ""
 	if phase == Phase.ROUND:
 		_update_rescue(delta)
@@ -1063,10 +1084,35 @@ func _update_debug() -> void:
 		var s: String = names[_monster_fx_state] if _monster_fx_state >= 0 else "?"
 		_debug_label.text = "monster (synced): %s\npos %v" % [s, _monster.global_position]
 
+func _update_eyes(delta: float) -> void:
+	# Local bag: its own mood, upgraded to ALERT when the monster is close.
+	var mp := _monster.global_position
+	var m := _player.eye_mood()
+	if _alert_over(m) and _player.global_position.distance_to(mp) < chase_range:
+		m = BagEyes.Mood.ALERT
+	_player.drive_eyes(m, delta)
+	# Remote ghosts: the synced mood, likewise upgraded near the monster — this
+	# is the "watch your friend's eyes go WIDE" clip.
+	for pid: int in _ghost_eyes:
+		var gm: int = _ghost_mood.get(pid, BagEyes.Mood.IDLE)
+		if _alert_over(gm) and _remote_bags[pid].global_position.distance_to(mp) < chase_range:
+			gm = BagEyes.Mood.ALERT
+		_ghost_eyes[pid].apply(gm, delta)
+
+func _alert_over(mood: int) -> bool:
+	# ALERT (scared-wide) overrides the calm moods, not the committed ones.
+	return mood == BagEyes.Mood.IDLE or mood == BagEyes.Mood.DROOP
+
 func _update_camera(delta: float) -> void:
 	var lookback_target := 1.0 if Input.is_key_pressed(KEY_Q) else 0.0
 	_lookback = move_toward(_lookback, lookback_target, delta * 6.0)
-	var target := _player.global_position + Vector3.UP * cam_height
+	# Cocoon snap: pull the camera INSIDE the bag so the dark overlay reads as
+	# fabric filling the screen — claustrophobia as punishment.
+	var cocooned := _player.state == SleepingBagPlayer.State.COCOONED
+	_cocoon_cam = move_toward(_cocoon_cam, 1.0 if cocooned else 0.0, delta * 4.0)
+	_spring.spring_length = lerpf(cam_distance, 0.12, _cocoon_cam)
+	var h := lerpf(cam_height, 0.35, _cocoon_cam)
+	var target := _player.global_position + Vector3.UP * h
 	_cam_pivot.global_position = _cam_pivot.global_position.lerp(
 		target, clampf(12.0 * delta, 0.0, 1.0))
 	_cam_pivot.rotation.y = _yaw + _lookback * PI
@@ -1120,16 +1166,17 @@ func _net_tick(delta: float) -> void:
 		flags |= FLAG_COCOONED
 	if _player.hidden:
 		flags |= FLAG_HIDDEN
-	_net_bag_state.rpc(_player.global_position, _player.quaternion, flags, _player.tumbles)
+	_net_bag_state.rpc(_player.global_position, _player.quaternion, flags, _player.tumbles, _player.eye_mood())
 	if multiplayer.is_server():
 		_net_monster_state.rpc(_monster.global_position)
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
-func _net_bag_state(pos: Vector3, rot: Quaternion, flags: int, tumbles: int) -> void:
+func _net_bag_state(pos: Vector3, rot: Quaternion, flags: int, tumbles: int, mood: int) -> void:
 	var pid := multiplayer.get_remote_sender_id()
 	if not _remote_bags.has(pid):
 		_spawn_remote_bag(pid)
 	_ghost_targets[pid] = [pos, rot]
+	_ghost_mood[pid] = mood
 	var ghost: Node3D = _remote_bags[pid]
 	ghost.set_meta("cocooned", flags & FLAG_COCOONED != 0)
 	ghost.set_meta("hidden", flags & FLAG_HIDDEN != 0)
@@ -1252,16 +1299,21 @@ func _on_peer_disconnected(pid: int) -> void:
 		_remote_bags[pid].queue_free()
 		_remote_bags.erase(pid)
 		_ghost_targets.erase(pid)
+		_ghost_eyes.erase(pid)
+		_ghost_mood.erase(pid)
 	_update_net_label()
 
 func _spawn_remote_bag(pid: int) -> Node3D:
 	var ghost := Node3D.new()
-	var bag := BagVisual.build(0.9, BagVisual.skin_for_peer(pid))
+	var built := BagVisual.build_with_eyes(0.9, BagVisual.skin_for_peer(pid))
+	var bag: Node3D = built[0]
 	bag.position = Vector3(0, -0.45, 0)
 	ghost.add_child(bag)
 	add_child(ghost)
 	ghost.global_position = _player.global_position
 	_remote_bags[pid] = ghost
+	_ghost_eyes[pid] = built[1]   # BagEyes for this ghost
+	_ghost_mood[pid] = BagEyes.Mood.IDLE
 	print("[NETTEST] ghost bag spawned for peer %d" % pid)
 	return ghost
 

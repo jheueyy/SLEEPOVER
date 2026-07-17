@@ -66,6 +66,7 @@ var _spawn_grace: float = 0.0  ## suppress landing noise right after (re)spawn
 
 var _ground_rays: Array[RayCast3D] = []
 var _visual: Node3D
+var _eyes: BagEyes
 var _spawn: Transform3D
 
 func _ready() -> void:
@@ -127,9 +128,29 @@ func set_spawn(xform: Transform3D) -> void:
 func set_skin(skin: int) -> void:
 	if _visual != null:
 		_visual.queue_free()
-	_visual = BagVisual.build(0.9, skin)
+	var built := BagVisual.build_with_eyes(0.9, skin)
+	_visual = built[0]
+	_eyes = built[1]
 	_visual.position = Vector3(0, -0.45, 0)  # bag base at the capsule's bottom
 	add_child(_visual)
+
+## Eye mood from local state. ALERT (monster near) is layered on by Main, which
+## knows the monster's position; this covers the states the bag knows itself.
+func eye_mood() -> int:
+	match state:
+		State.COCOONED: return BagEyes.Mood.SLEEPY
+		State.TUMBLED: return BagEyes.Mood.SPIRAL
+	if hidden:
+		return BagEyes.Mood.SHUT
+	if stamina < 1.0:
+		return BagEyes.Mood.DROOP
+	return BagEyes.Mood.IDLE
+
+## Drive the eyes to `mood` (Main passes eye_mood(), upgraded to ALERT if the
+## monster is close). Called every frame by Main for the local bag.
+func drive_eyes(mood: int, delta: float) -> void:
+	if _eyes != null:
+		_eyes.apply(mood, delta)
 
 func respawn() -> void:
 	freeze = false

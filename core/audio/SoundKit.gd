@@ -43,6 +43,7 @@ static func _generate(kind: String) -> AudioStreamWAV:
 		"beep": return _to_wav(_beep(), false)
 		"bark": return _to_wav(_bark(), false)
 		"clatter": return _to_wav(_clatter(), false)
+		"shush": return _to_wav(_shush(), false)
 		_: return _to_wav(_click(), false)
 
 # ── Generators (all return mono float samples in [-1, 1]) ─────────────────
@@ -151,6 +152,21 @@ static func _bark() -> PackedFloat32Array:
 				phase += lerpf(420.0, 180.0, t) / RATE
 				var saw := 2.0 * fmod(phase, 1.0) - 1.0
 				out[idx] += (saw * 0.6 + randf_range(-0.35, 0.35)) * sin(PI * t) * 0.6
+	return out
+
+static func _shush() -> PackedFloat32Array:
+	# "shhhh" — band-ish filtered noise that swells then fades. The Housesitter
+	# telling you to go to sleep. Creepy-cute, not a scream.
+	var n := int(RATE * 0.9)
+	var out := PackedFloat32Array()
+	out.resize(n)
+	var prev := 0.0
+	for i in n:
+		var t := float(i) / n
+		var env := sin(PI * t)              # swell in, fade out
+		var white := randf_range(-1.0, 1.0)
+		prev = lerpf(prev, white, 0.35)     # crude low-pass → airy "shh", not hiss
+		out[i] = (white - prev) * env * 0.5  # high-passed noise = breathy consonant
 	return out
 
 static func _clatter() -> PackedFloat32Array:

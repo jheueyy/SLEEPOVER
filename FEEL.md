@@ -177,6 +177,24 @@ is a CLUE → ACTION pair with a randomized clue spot; ACTIONs emit NoiseBus pin
 
 ---
 
+## Housesitter juice + eye-states (Sprint 4)
+The bag's googly eyes carry the character. `core/player/BagEyes.gd` drives pupils
++ eyelids per **mood**, mapped from state in `Player.eye_mood()`:
+`COCOONED→SLEEPY`, `TUMBLED→SPIRAL`, `hidden→SHUT`, `stamina<1→DROOP`, else `IDLE`
+(with occasional blinks). `Main` layers `ALERT` (wide, darting) on when the
+monster is within `chase_range`, and syncs the mood as one int on the bag RPC so
+you see your **friends'** eyes go wide too.
+
+The Housesitter's **shush** (`shush_range` 4.0, `shush_cooldown` 3.5) fires when
+it corners a survivor mid-chase — "go to sleep." Its lullaby **hum swells** as it
+nears the closest survivor (−12→−3 dB over 3–15m). Getting cocooned **snaps the
+camera inside the bag** (spring pulls to 0.12m) so the dark overlay reads as
+fabric — claustrophobia as punishment.
+
+> Client audio note: creak/shush/hum-swell run in the host's monster
+> `_physics_process`; clients get the looping hum + screech via the existing
+> relay but not the swell/shush (a known gray-box gap, fine for now).
+
 ## Basement (the dread floor)
 The basement (`y=-3`, under the garage, reached by the garage→basement stairs)
 is an enlarged rec room (`x3–8, z−6..−1`) plus a dead-end **utility pocket** in
