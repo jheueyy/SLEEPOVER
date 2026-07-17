@@ -69,11 +69,13 @@ const WALLS: Array = [
 	{"a": Vector2(2, 2), "b": Vector2(5, 2), "base": 3.0},                                 # closet|office divider
 	{"a": Vector2(-3, -6), "b": Vector2(-3, -1), "base": 3.0},                             # kid1|kid2
 	{"a": Vector2(2, -6), "b": Vector2(2, -1), "base": 3.0},                               # kid2|upbath
-	# Basement (under the garage; sealed box, entered via the garage stair hole)
-	{"a": Vector2(5, -6), "b": Vector2(8, -6), "base": -3.0},
-	{"a": Vector2(5, -1), "b": Vector2(8, -1), "base": -3.0},
-	{"a": Vector2(5, -6), "b": Vector2(5, -1), "base": -3.0},
-	{"a": Vector2(8, -6), "b": Vector2(8, -1), "base": -3.0},
+	# Basement (rec room x3..8, z-6..-1) + a dead-end UTILITY pocket in the SW
+	# corner. Entered via the garage stair hole (lands at the east/south corner).
+	{"a": Vector2(3, -6), "b": Vector2(8, -6), "base": -3.0},   # south (back)
+	{"a": Vector2(3, -1), "b": Vector2(8, -1), "base": -3.0},   # north (front)
+	{"a": Vector2(3, -6), "b": Vector2(3, -1), "base": -3.0},   # west
+	{"a": Vector2(8, -6), "b": Vector2(8, -1), "base": -3.0},   # east
+	{"a": Vector2(5, -6), "b": Vector2(5, -4), "base": -3.0},   # utility divider (stub; the z -4..-1 gap is the pocket's only way in)
 	# Attic (low walls, over the upper back row)
 	{"a": Vector2(-8, -6), "b": Vector2(2, -6), "base": 6.0, "h": 2.2},
 	{"a": Vector2(-8, -1), "b": Vector2(2, -1), "base": 6.0, "h": 2.2},
@@ -101,8 +103,8 @@ const SLABS: Array = [
 	# Attic floor — hole at x -3..-1.4, z -6..-1 (attic stairwell; step off sideways)
 	{"rect": [-8.0, -6.0, -3.0, -1.0], "top": 6.0},
 	{"rect": [-1.4, -6.0, 2.0, -1.0], "top": 6.0},
-	# Basement floor (under the garage)
-	{"rect": [5.0, -6.0, 8.0, -1.0], "top": -3.0},
+	# Basement floor (rec room + utility pocket)
+	{"rect": [3.0, -6.0, 8.0, -1.0], "top": -3.0},
 	# Ceilings — the upper front row and the up-bath have the flat roof at y6;
 	# the attic floor already ceils the back row. Garage gets its own roof.
 	{"rect": [-8.0, -1.0, 5.0, 6.0], "top": 6.0},
@@ -143,6 +145,7 @@ const PATROL_LOOP: Array = [
 	Vector3(-5.5, 0.5, -3.5),   # kitchen
 	Vector3(-4.5, 0.5, 2.5),    # living room
 	Vector3(0.5, 0.5, 4.5),     # hall
+	Vector3(6.0, -2.7, -3.5),   # basement rec room (the hum wanders down there)
 	Vector3(0.5, 3.5, 5.3),     # landing (upstairs)
 	Vector3(-4.5, 3.5, 3.5),    # master bed
 	Vector3(-2.0, 3.5, -0.2),   # corridor
@@ -155,7 +158,7 @@ const HIDE_SPOTS: Array = [
 	Vector3(4.2, 0.0, -5.2),    # pantry corner
 	Vector3(4.2, 3.0, 1.2),     # upstairs linen closet
 	Vector3(-7.2, 3.0, 5.2),    # under the master bed
-	Vector3(5.8, -3.0, -5.2),   # basement corner
+	Vector3(7.2, -3.0, -2.0),   # basement rec-room NE corner (clear of the breaker)
 ]
 
 # ── Objective spots (plan x/z + floor y; host picks one clue spot per round) ──
@@ -172,7 +175,7 @@ const PHONE_SPOT := Vector3(1.7, 0.0, 5.4)  # hall wall by the front door
 const BREAKER_DIAGRAM_SPOTS: Array = [
 	Vector3(7.4, 0.0, -3.0), Vector3(6.4, 0.0, 1.0), Vector3(7.4, 0.0, 4.5),
 ]
-const BREAKER_BOX_SPOT := Vector3(5.6, -3.0, -5.2)  # basement wall
+const BREAKER_BOX_SPOT := Vector3(3.4, -3.0, -5.0)  # west wall of the basement utility pocket (dead-end)
 
 # The Dog Has The Keys: grab a snack from the pantry, then reach the wandering
 # dog. The dog paces this ground-floor loop.
@@ -206,7 +209,7 @@ const GLASSES_SPOTS: Array = [
 const EXITS: Array = [
 	{"name": "FRONT DOOR", "at": Vector3(0.5, 1.0, 7.4), "half": Vector2(1.2, 1.2), "door": "front_door"},
 	{"name": "GARAGE", "at": Vector3(6.5, 1.0, 7.4), "half": Vector2(1.4, 1.2), "door": "garage_door"},
-	{"name": "BASEMENT WINDOW", "at": Vector3(7.4, -2.0, -5.4), "half": Vector2(1.2, 1.2), "door": ""},
+	{"name": "BASEMENT WINDOW", "at": Vector3(6.5, -2.0, -5.6), "half": Vector2(1.2, 1.2), "door": ""},
 ]
 
 static func exits() -> Array:
@@ -246,7 +249,8 @@ const ROOMS: Array = [
 	{"name": "KID ROOM 1", "at": Vector3(-5.5, 5.2, -3.5)},
 	{"name": "KID ROOM 2", "at": Vector3(-0.5, 5.2, -3.5)},
 	{"name": "UP BATH", "at": Vector3(3.5, 5.2, -3.5)},
-	{"name": "BASEMENT", "at": Vector3(6.5, -0.8, -3.5)},
+	{"name": "BASEMENT", "at": Vector3(6.0, -1.4, -3.0)},
+	{"name": "UTILITY (BREAKER)", "at": Vector3(4.0, -1.4, -5.0)},
 	{"name": "ATTIC", "at": Vector3(-3.0, 7.4, -3.5)},
 ]
 
@@ -256,6 +260,11 @@ const COL_ROOF := Color(0.34, 0.20, 0.18)
 const COL_STEP_A := Color(0.34, 0.28, 0.24)
 const COL_STEP_B := Color(0.40, 0.33, 0.28)
 const COL_CHUTE := Color(1.0, 0.9, 0.2)
+
+# Room lamps: the basement is the intentionally-darkest floor (dread + the
+# Breaker turns lights up later). Any room below ground uses the dim value.
+const ROOM_LIGHT_ENERGY := 0.7
+const BASEMENT_LIGHT_ENERGY := 0.18
 
 # ── Builder ────────────────────────────────────────────────────────────────
 
@@ -375,11 +384,13 @@ static func build(parent: Node3D) -> void:
 		parent.add_child(label)
 
 		# One warm lamp per room — with real ceilings, the sun stays outside.
+		# The basement (below ground) is dim: the darkest, dreadiest floor.
+		var below_ground := at.y < -1.0
 		var lamp := OmniLight3D.new()
 		lamp.position = Vector3(at.x * S, at.y + 0.3, at.z * S)
-		lamp.omni_range = 6.5
-		lamp.light_energy = 0.7
-		lamp.light_color = Color(1.0, 0.9, 0.75)
+		lamp.omni_range = 5.0 if below_ground else 6.5
+		lamp.light_energy = BASEMENT_LIGHT_ENERGY if below_ground else ROOM_LIGHT_ENERGY
+		lamp.light_color = Color(0.7, 0.75, 0.95) if below_ground else Color(1.0, 0.9, 0.75)
 		lamp.shadow_enabled = false
 		parent.add_child(lamp)
 

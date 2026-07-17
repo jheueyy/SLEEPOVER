@@ -1175,6 +1175,7 @@ func begin(is_host: bool, is_test: bool, is_spectator: bool = false) -> void:
 			print("[NETTEST] monster at %v %s" % [_monster.global_position,
 				_monster.get_debug_text().replace("\n", " | ")]))
 		add_child(diag)
+		get_tree().create_timer(2.5).timeout.connect(_probe_basement_nav)
 
 	# Round start is host-authoritative AND waits for every client's game scene
 	# to load, so the LIGHTS_OUT phase RPC can't arrive before their Main exists.
@@ -1183,6 +1184,21 @@ func begin(is_host: bool, is_test: bool, is_spectator: bool = false) -> void:
 	elif _net_connected():
 		_ack_loaded.rpc_id(1)
 	_update_net_label()
+
+# Test-mode nav probe: prove the enlarged basement rec room and the utility
+# alcove (Breaker anchor) are both navmesh-reachable from the ground floor.
+func _probe_basement_nav() -> void:
+	var map := get_world_3d().navigation_map
+	var from := Vector3(9.1, 0.5, 0.0)  # garage, ground floor
+	var targets := {
+		"rec_room": HouseSuburban.scaled(Vector3(6.0, -2.7, -3.5)),
+		"utility_breaker": HouseSuburban.scaled(HouseSuburban.BREAKER_BOX_SPOT + Vector3(0.6, 0, 0)),
+	}
+	for label: String in targets:
+		var pts: PackedVector3Array = NavigationServer3D.map_get_path(map, from, targets[label], true)
+		var end := pts[pts.size() - 1] if pts.size() > 0 else Vector3.INF
+		var reached := end.distance_to(targets[label]) < 1.5
+		print("[NETTEST] basement %s pts=%d reached=%s" % [label, pts.size(), reached])
 
 var _acked_peers: Array[int] = []
 

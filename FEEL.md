@@ -177,6 +177,15 @@ is a CLUE → ACTION pair with a randomized clue spot; ACTIONs emit NoiseBus pin
 
 ---
 
+## Basement (the dread floor)
+The basement (`y=-3`, under the garage, reached by the garage→basement stairs)
+is an enlarged rec room (`x3–8, z−6..−1`) plus a dead-end **utility pocket** in
+the SW corner that houses the **Breaker** objective. It's the intentionally
+darkest floor: room lamps below ground use `BASEMENT_LIGHT_ENERGY = 0.18`
+(vs `ROOM_LIGHT_ENERGY = 0.7`) with a cold tint. Descent = commit + lose the
+upstairs escapes + a single-stair chokepoint; the walkout (BASEMENT WINDOW exit)
+is the third escape route. Monster patrols in via the garage↔basement nav link.
+
 ## House scale
 `HouseSuburban.S = 1.4` — the whole floor plan is scaled 1.4x at build time
 (playtest 2026-07-09: rooms too small, corridors too tight, chases resolved
