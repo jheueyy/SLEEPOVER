@@ -198,6 +198,24 @@ mask + eye-pits) swaps to the real monster model in the art pass.
 > `_physics_process`; clients get the looping hum + screech via the existing
 > relay but not the swell/shush (a known gray-box gap, fine for now).
 
+## Floor distribution (pull players + monster across all 3 floors)
+Everything used to cluster on the ground floor. Now:
+- **Objective clues** have per-floor pools (Landline/Garage/Breaker each carry
+  ground + upstairs + basement candidates in `HouseSuburban`). `Main._host_start_round`
+  runs a **spread picker**: each round's 5 clues land ≤2 per floor, span ≥2 floors,
+  and always ≥1 upstairs — so clue-hunting drags players up and down. (Final
+  *completions* stay ground-heavy by nature; spreading those needs the 2 optional
+  objectives — a later content add.)
+- **Monster spawn** is dynamic (`MONSTER_SPAWN_CANDIDATES`): at LIGHTS OUT the host
+  picks the candidate farthest from the players + the round's clue/action anchors,
+  excluding any within `spawn_stair_clearance` (3.0) of a staircase (`STAIR_PLAN_POINTS`).
+  So the action floor starts monster-free and it's never camped on a chokepoint.
+- **Patrol dwell cap** (`Monster.patrol_floor_dwell`, 20s): the monster can't spend
+  more than N secs on one floor while patrolling — it routes to the nearest waypoint
+  on a different floor, so it circulates and is encountered everywhere.
+- `HouseSuburban.floor_of(y)` classifies a height: basement `y<-1`, ground `-1..2`,
+  upstairs `y≥2` (attic counts as up).
+
 ## Basement (the dread floor)
 The basement (`y=-3`, under the garage, reached by the garage→basement stairs)
 is an enlarged rec room (`x3–8, z−6..−1`) plus a dead-end **utility pocket** in

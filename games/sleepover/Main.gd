@@ -12,6 +12,7 @@ enum Phase { LOBBY, LIGHTS_OUT, ROUND, RESULTS }
 @export_group("Round")
 @export var lights_out_duration: float = 10.0
 @export var round_duration: float = 600.0   ## 10 minute night
+@export var spawn_stair_clearance: float = 3.0  ## monster won't spawn this close to a staircase
 
 @export_group("Camera")
 @export var cam_height: float = 0.9
@@ -255,6 +256,32 @@ func _run_selftest() -> void:
 	print("[SELFTEST] eye-states: idle=%s droop=%s shut=%s sleepy=%s" % [
 		idle_ok, droop_ok, shut_ok, sleepy_ok])
 	pass_all = pass_all and idle_ok and droop_ok and shut_ok and sleepy_ok
+
+	# 10. FLOOR DISTRIBUTION. Over several rolls: the round's clues spread across
+	# floors (<=2/floor, span >=2, >=1 upstairs), and the monster spawns clear of
+	# the staircases (never camped on a chokepoint).
+	var spread_ok := true
+	var stair_ok := true
+	for _r in 8:
+		_apply_phase(Phase.LOBBY, {})
+		_host_start_round()  # solo: computes spread + spawn, applies LIGHTS_OUT
+		var counts := {HouseSuburban.Floor.BASEMENT: 0, HouseSuburban.Floor.GROUND: 0,
+			HouseSuburban.Floor.UPSTAIRS: 0}
+		for o: Objective in _objectives:
+			if o.def.clue_spots.size() > 0 and o.seed.has("clue"):
+				counts[HouseSuburban.floor_of(o.def.clue_spots[o.seed["clue"]].y)] += 1
+		var used := 0
+		var maxc := 0
+		for f: int in counts:
+			if counts[f] > 0: used += 1
+			maxc = maxi(maxc, counts[f])
+		if maxc > 2 or used < 2 or counts[HouseSuburban.Floor.UPSTAIRS] < 1:
+			spread_ok = false
+		if HouseSuburban.dist_to_nearest_stair(_monster.global_position) < spawn_stair_clearance:
+			stair_ok = false
+	print("[SELFTEST] floors: clue-spread(<=2, span, upstairs)=%s spawn-clear-of-stairs=%s" % [
+		spread_ok, stair_ok])
+	pass_all = pass_all and spread_ok and stair_ok
 
 	print("[SELFTEST] RESULT: %s" % ("ALL PASS" if pass_all else "FAIL"))
 	get_tree().quit(0 if pass_all else 1)
@@ -561,12 +588,19 @@ func _host_start_round() -> void:
 	var defs := ObjectiveDef.all()
 	defs.shuffle()
 	defs = defs.slice(0, 5)
+	# Spread each objective's clue across floors (the traversal driver): <=2 per
+	# floor, and at least one upstairs + one basement when the draw allows.
+	var clue_idx := _spread_clue_indices(defs)
 	var objs: Array = []
 	var has_glasses := false
+	var anchors: Array[Vector3] = [HouseSuburban.SPAWNS[0]]  # player start (living room)
 	for d: ObjectiveDef in defs:
 		var s := {"id": d.id}
 		if d.clue_spots.size() > 0:
-			s["clue"] = randi() % d.clue_spots.size()
+			s["clue"] = clue_idx[d.id]
+			anchors.append(d.clue_spots[clue_idx[d.id]])
+		if d.action_spot != Vector3.ZERO:
+			anchors.append(d.action_spot)
 		if d.code_len > 0:
 			var lo := 1 if d.kind == ObjectiveDef.Kind.BREAKER else 0
 			var hi := 3 if d.kind == ObjectiveDef.Kind.BREAKER else 9
@@ -585,10 +619,77 @@ func _host_start_round() -> void:
 			for pid in multiplayer.get_peers():
 				players.append(pid)
 		blurred = players[randi() % players.size()]
-	var data := {"objs": objs, "blurred": blurred}
+	# Monster starts far from the players AND the round's clues/actions, never
+	# camped on a staircase — so every round the "action floor" is monster-free.
+	var spawn := _pick_monster_spawn(anchors)
+	var data := {"objs": objs, "blurred": blurred, "monster_spawn": spawn}
 	_apply_phase(Phase.LIGHTS_OUT, data)
 	if _net_connected():
 		_net_phase.rpc(Phase.LIGHTS_OUT, data)
+
+## Assign each drawn objective's clue index so the round's clues spread across
+## floors: fixed-floor objectives first (Glasses=upstairs, Dog=ground), then the
+## flexible ones (Landline/Garage/Breaker) fill under-covered floors, <=2/floor.
+func _spread_clue_indices(defs: Array) -> Dictionary:
+	var counts := {HouseSuburban.Floor.BASEMENT: 0, HouseSuburban.Floor.GROUND: 0,
+		HouseSuburban.Floor.UPSTAIRS: 0}
+	var out := {}
+	# Build each def's floor -> [clue indices] map; classify flexible vs fixed.
+	var by_floor := {}     # id -> {floor -> [idx]}
+	var flexible: Array = []
+	var fixed: Array = []
+	for d: ObjectiveDef in defs:
+		if d.clue_spots.is_empty():
+			continue
+		var fmap := {}
+		for i in d.clue_spots.size():
+			var f := HouseSuburban.floor_of(d.clue_spots[i].y)
+			fmap.get_or_add(f, []).append(i)
+		by_floor[d.id] = fmap
+		if fmap.size() > 1:
+			flexible.append(d.id)
+		else:
+			fixed.append(d.id)
+	# Fixed objectives take their only floor.
+	for id: String in fixed:
+		var f: int = by_floor[id].keys()[0]
+		out[id] = _rand_from(by_floor[id][f])
+		counts[f] += 1
+	# Flexible objectives fill the least-covered floor they can reach (<=2 cap),
+	# prioritising floors still at zero so basement + upstairs get coverage.
+	for id: String in flexible:
+		var choices: Array = by_floor[id].keys()
+		choices.sort_custom(func(a: int, b: int) -> bool:
+			if (counts[a] == 0) != (counts[b] == 0):
+				return counts[a] == 0        # empty floors first
+			return counts[a] < counts[b])    # then least-covered
+		var chosen: int = choices[0]
+		for c: int in choices:
+			if counts[c] < 2:
+				chosen = c
+				break
+		out[id] = _rand_from(by_floor[id][chosen])
+		counts[chosen] += 1
+	return out
+
+func _rand_from(indices: Array) -> int:
+	return indices[randi() % indices.size()]
+
+## Pick the spawn candidate farthest (min-distance) from all round anchors,
+## excluding any within spawn_stair_clearance of a staircase.
+func _pick_monster_spawn(anchors: Array[Vector3]) -> Vector3:
+	var best := HouseSuburban.MONSTER_SPAWN + Vector3.ZERO  # fallback
+	var best_score := -1.0
+	for cand: Vector3 in HouseSuburban.monster_spawn_candidates():
+		if HouseSuburban.dist_to_nearest_stair(cand) < spawn_stair_clearance:
+			continue
+		var nearest := INF
+		for a: Vector3 in anchors:
+			nearest = minf(nearest, cand.distance_to(a))
+		if nearest > best_score:
+			best_score = nearest
+			best = cand
+	return best
 
 func _apply_phase(p: Phase, data: Dictionary) -> void:
 	phase = p
@@ -599,12 +700,18 @@ func _apply_phase(p: Phase, data: Dictionary) -> void:
 			_phase_timer = lights_out_duration
 			_setup_objectives(data)
 			_player.respawn()
+			# Same on host + client (same data): the monster's LIGHTS-OUT spawn.
+			if data.has("monster_spawn"):
+				_monster.set_spawn_point(data["monster_spawn"])
+				_monster_target = data["monster_spawn"]
+				_has_monster_target = true
 			_monster.respawn()
 			_monster.set_wake(lights_out_duration)
 			_cocoon_overlay.visible = false
 			_show_toast("LIGHTS OUT.", 3.0)
-			print("[NETTEST] phase=LIGHTS_OUT objs=%d blurred=%d" % [
-				(data.get("objs", []) as Array).size(), data.get("blurred", 0)])
+			print("[NETTEST] phase=LIGHTS_OUT objs=%d blurred=%d spawn_floor=%d" % [
+				(data.get("objs", []) as Array).size(), data.get("blurred", 0),
+				HouseSuburban.floor_of(_monster.global_position.y)])
 		Phase.ROUND:
 			_phase_timer = round_duration
 			_round_elapsed = 0.0

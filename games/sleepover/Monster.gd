@@ -19,6 +19,7 @@ signal lunged_hit(target: Node3D)
 
 @export var move_speed: float = 2.6        ## chase speed: > shuffle (2.0), < hop chain (~3.6). FEEL.md
 @export var patrol_speed_mult: float = 0.45 ## patrol crawl, relative to move_speed
+@export var patrol_floor_dwell: float = 20.0 ## max secs on one floor in PATROL before routing to another
 @export var wake_delay: float = 40.0       ## secs asleep at round start
 @export var hearing_radius: float = 14.0   ## pings farther than this don't exist
 @export var investigate_time: float = 8.0  ## secs spent searching a ping site
@@ -48,6 +49,8 @@ var _state: State = State.PATROL
 var _asleep: bool = true
 var _wake_timer: float = 0.0
 var _patrol_i: int = 0
+var _floor_dwell: float = 0.0              ## secs on the current floor while patrolling
+var _patrol_floor: int = -1               ## floor we've been dwelling on
 var _last_known: Vector3                   ## the only "player position" it has
 var _chase_timer: float = 0.0
 var _dwell: float = 0.0
@@ -170,8 +173,13 @@ func set_wake(seconds: float) -> void:
 	if _asleep and _hum.playing:
 		_hum.stop()
 
+func set_spawn_point(world_pos: Vector3) -> void:
+	_spawn.origin = world_pos  # host sets the LIGHTS-OUT spawn; respawn() uses it
+
 func respawn() -> void:
 	global_transform = _spawn
+	_floor_dwell = 0.0
+	_patrol_floor = -1
 	_set_state(State.PATROL)
 	_asleep = true
 	_wake_timer = wake_delay
@@ -313,6 +321,17 @@ func _physics_process(delta: float) -> void:
 	match _state:
 		State.PATROL:
 			if not patrol_points.is_empty():
+				# Dwell cap: no camping one floor — after patrol_floor_dwell secs
+				# on a floor, route to the nearest waypoint on a different one.
+				var f := HouseSuburban.floor_of(global_position.y)
+				if f == _patrol_floor:
+					_floor_dwell += delta
+				else:
+					_patrol_floor = f
+					_floor_dwell = 0.0
+				if _floor_dwell > patrol_floor_dwell:
+					_jump_to_other_floor(f)
+					_floor_dwell = 0.0
 				var p := patrol_points[_patrol_i % patrol_points.size()]
 				if _flat_distance(p) < 1.2:
 					_patrol_i = (_patrol_i + 1) % patrol_points.size()
@@ -490,6 +509,20 @@ func _nearest_patrol_index() -> int:
 			best_d = d
 			best = i
 	return best
+
+## Route to the nearest patrol waypoint NOT on `cur_floor` — the dwell-cap escape.
+func _jump_to_other_floor(cur_floor: int) -> void:
+	var best := -1
+	var best_d := INF
+	for i in patrol_points.size():
+		if HouseSuburban.floor_of(patrol_points[i].y) == cur_floor:
+			continue
+		var d := _flat_distance(patrol_points[i])
+		if d < best_d:
+			best_d = d
+			best = i
+	if best >= 0:
+		_patrol_i = best
 
 func _flat_distance(to: Vector3) -> float:
 	var d := to - global_position

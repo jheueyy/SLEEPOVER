@@ -162,18 +162,23 @@ const HIDE_SPOTS: Array = [
 ]
 
 # ── Objective spots (plan x/z + floor y; host picks one clue spot per round) ──
-# The Landline: number note somewhere, dial at the hall wall phone.
+# The Landline: number note somewhere (any floor), dial at the hall wall phone.
 const CLUE_SPOTS: Array = [
-	Vector3(-7.4, 0.0, -5.4),   # kitchen fridge
-	Vector3(1.5, 0.0, 3.0),     # hallway table
-	Vector3(7.4, 0.0, 3.0),     # garage shelf
-	Vector3(-4.5, 0.0, 1.0),    # living room couch
+	Vector3(-7.4, 0.0, -5.4),   # kitchen fridge (ground)
+	Vector3(1.5, 0.0, 3.0),     # hallway table (ground)
+	Vector3(-4.5, 3.0, 3.5),    # master nightstand (upstairs)
+	Vector3(3.5, 3.0, -3.5),    # up-bath cabinet (upstairs)
+	Vector3(7.0, -3.0, -3.5),   # basement shelf (basement)
 ]
 const PHONE_SPOT := Vector3(1.7, 0.0, 5.4)  # hall wall by the front door
 
-# The Breaker: fuse-order diagram in the garage, fuse box in the basement.
+# The Breaker: fuse-order diagram somewhere (any floor), fuse box in the basement.
 const BREAKER_DIAGRAM_SPOTS: Array = [
-	Vector3(7.4, 0.0, -3.0), Vector3(6.4, 0.0, 1.0), Vector3(7.4, 0.0, 4.5),
+	Vector3(7.4, 0.0, -3.0),    # garage wall (ground)
+	Vector3(6.4, 0.0, 1.0),     # laundry (ground)
+	Vector3(-5.0, 3.0, -3.5),   # kid room 1 wall (upstairs)
+	Vector3(0.5, 3.0, 5.0),     # landing (upstairs)
+	Vector3(6.0, -3.0, -5.0),   # basement utility (basement)
 ]
 const BREAKER_BOX_SPOT := Vector3(3.4, -3.0, -5.0)  # west wall of the basement utility pocket (dead-end)
 
@@ -188,11 +193,13 @@ const DOG_PATH: Array = [
 # The Deadbolt: two players at the back door (kitchen), both holding E.
 const DEADBOLT_SPOT := Vector3(-6.5, 0.0, -5.6)
 
-# The Garage Code: birthday clue somewhere, keypad by the garage door.
+# The Garage Code: birthday clue somewhere (any floor), keypad by the garage door.
 const GARAGE_CLUE_SPOTS: Array = [
-	Vector3(-4.5, 0.0, 3.5),    # living room banner
-	Vector3(-5.5, 0.0, -3.0),   # kitchen calendar
-	Vector3(1.5, 0.0, 4.5),     # hall photo
+	Vector3(-4.5, 0.0, 3.5),    # living room banner (ground)
+	Vector3(-5.5, 0.0, -3.0),   # kitchen calendar (ground)
+	Vector3(-0.5, 3.0, -3.5),   # kid room 2 cake photo (upstairs)
+	Vector3(3.5, 3.0, 4.0),     # office (upstairs)
+	Vector3(7.0, -3.0, -2.0),   # basement corner (basement)
 ]
 const GARAGE_KEYPAD_SPOT := Vector3(6.5, 0.0, 5.3)  # garage door wall
 
@@ -231,6 +238,49 @@ static func patrol_points() -> Array[Vector3]:
 
 static func scaled(p: Vector3) -> Vector3:
 	return Vector3(p.x * S, p.y, p.z * S)
+
+# ── Floors & distribution ────────────────────────────────────────────────────
+enum Floor { BASEMENT, GROUND, UPSTAIRS }
+
+## Which floor a REAL (unscaled-y) world height belongs to. Attic counts as up.
+static func floor_of(y: float) -> Floor:
+	if y < -1.0:
+		return Floor.BASEMENT
+	if y < 2.0:
+		return Floor.GROUND
+	return Floor.UPSTAIRS
+
+# Monster LIGHTS-OUT spawn candidates (plan x/z + real y), spread across floors
+# and clear of the staircases. Host picks the one farthest from players+clues.
+const MONSTER_SPAWN_CANDIDATES: Array = [
+	Vector3(-4.2, 6.4, -4.9),   # attic (far up)
+	Vector3(-6.0, 3.5, -3.5),   # kid room 1 (upstairs far NW)
+	Vector3(3.5, 3.5, 4.0),     # office (upstairs far SE)
+	Vector3(4.0, -3.0, -5.0),   # basement utility (far down)
+	Vector3(-6.5, 0.5, -3.5),   # kitchen (ground far NW)
+	Vector3(6.5, 0.5, 4.0),     # garage front (ground far SE, clear of the basement stairs)
+]
+
+# Staircase plan positions the monster must NOT spawn on/next to (chokepoints).
+const STAIR_PLAN_POINTS: Array = [
+	Vector2(-0.25, 2.5),   # main stairs (hall <-> upstairs)
+	Vector2(7.0, -3.5),    # basement stairs (garage <-> basement)
+	Vector2(-2.2, -3.5),   # attic stairs (kid2 <-> attic)
+]
+
+static func monster_spawn_candidates() -> Array[Vector3]:
+	var out: Array[Vector3] = []
+	for p: Vector3 in MONSTER_SPAWN_CANDIDATES:
+		out.append(Vector3(p.x * S, p.y, p.z * S))
+	return out
+
+## Nearest staircase distance (world, x/z) from a scaled point — for the spawn
+## exclusion check.
+static func dist_to_nearest_stair(world_pos: Vector3) -> float:
+	var best := INF
+	for s: Vector2 in STAIR_PLAN_POINTS:
+		best = minf(best, Vector2(world_pos.x - s.x * S, world_pos.z - s.y * S).length())
+	return best
 
 # Room labels: gray-box wayfinding + playtest comms ("it's in the DINING ROOM")
 const ROOMS: Array = [
