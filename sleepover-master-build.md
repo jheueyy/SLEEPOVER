@@ -13,7 +13,7 @@ That prompt is **Sprint 1 of 6**. It converts the chase demo into one playable r
 | **0. Menu + lobby** | Main menu, functional Steam lobby, join code, ready-up → round start | Phase 1 (wks 2–3) |
 | **1. Make it a game** | One playable round, 1 objective, AI monster, hide + rescue, 3 endings | Phase 2 (wks 4–5) |
 | **2. Full objective system** | All 6–8 objectives + 3 escape routes, data-driven | Phase 2→3 (wk 5–6) |
-| **3. The real house** | Childhood-home gray-box replaces test house, tuned circulation | Phase 3 (wk 6) |
+| **3. Add the basement** | Extend test house with a basement level (the dread floor) | Phase 3 (wk 6) |
 | **4. Player-monster + juice** | Secret monster assignment, audio stack, camera juice, eye-states | Phase 4 (wks 8–9) |
 | **5. Narrative layer** | Scrapbook, lore fragments, lullaby/shush behaviors, intro/outro | Phase 3→4 (wk 7–9) |
 | **6. Content framework** | Monster #2 + House Rules mutators + map-swap architecture | Phase 7 (post-launch) |
@@ -124,41 +124,46 @@ clue is found, shows no locations, and stays synced across host + client.
 
 ---
 
-## 2. SPRINT 3 — THE REAL HOUSE
+## 2. SPRINT 3 — ADD THE BASEMENT (extend the test house)
 
-Replaces the test gray-box with a personal-reference house layout (public fiction = Maple Street, all identifying details filed off). **Deferred — building continues on the current test house through Sprints 2, 4, 5; this swap lands when the layout sketch is ready.** Keeping the test house now means the real layout drops in as a clean content swap, not a mid-sprint dependency.
+**Decision:** the current test house IS the shippable launch map. No real-house dependency — we build on what exists. The one addition it needs is a **basement**, because descent is the game's strongest suspense tool (see below). This is a gray-box level-extension task, not a from-scratch map, and needs no sketch.
 
-### Known structure (colonial, 3 levels)
-- **Main:** sitting room, dining room, eat-in kitchen + living room combo (open hub), wood-burning fireplace, half bath near kitchen, office. Deck off the living room.
-- **Upstairs:** 4 bedrooms, 2 full baths.
-- **Basement:** large rec room with walkout to patio, utility/laundry room (washer/dryer, extra fridge).
+### Why a basement specifically (not just another dark room)
+Descent is uniquely scary in a way a same-floor dark room can't match: going DOWN means committing, losing the escape routes above you, and turning the single staircase into a chokepoint the monster can pin. Vertical dread is real. This is worth a small build task to get.
 
-### How each floor plays
-- **Main floor = objective hub.** Landline (wall phone), Dog/keys, Garage Code. The open kitchen/living combo is the central circulation loop — the space where chases resolve. Deck door = one escape.
-- **Upstairs = hiding + lore.** Closets and under-beds (the 4 hiding volumes), most Scrapbook fragments seeded here. Only two ways up/down = a chokepoint players must gamble on.
-- **Basement = the tension floor.** Darkest. The Breaker lives here (you WANT to go down, the game makes you dread it). Utility room is a deliberate dead-end panic spot. Walkout = second escape.
+### What to add to the test house
+- **One staircase down** from the main floor to the basement (a second vertical chokepoint alongside the existing main↔upstairs stairs).
+- **Rec room:** open basement space, darkest area in the game.
+- **Utility/laundry pocket:** a deliberate dead-end that houses **the Breaker objective** — players WANT to go down for it, and the game makes them dread it.
+- **Walkout exit:** a basement door/window = the second escape route (keeps "multiple exits = strategy argument" gameplay intact).
 
-### Circulation edits (real houses need game-ification)
+### How the three floors now play
+- **Main floor = objective hub + circulation loop.** Landline, Dog/keys, Garage Code. Chases resolve here. Front/back door escapes.
+- **Upstairs = hiding + lore.** Closets and under-beds (hiding volumes), most Scrapbook fragments. The main↔upstairs stairs are a chokepoint players gamble on.
+- **Basement = the dread floor.** Darkest, houses the Breaker, dead-end utility pocket, walkout escape. The descent is the suspense.
+
+### Circulation rules (apply to the whole house)
 - Widen main hallways ~20% for the low camera.
-- Guarantee at least one full-loop path on the main floor (no chase should dead-end instantly).
-- Keep 2–3 *intentional* dead ends (utility room, a bedroom) as high-risk hiding pockets.
-- Add the laundry chute as a one-way fast vertical shortcut (fiction: "the house as the legend remembers it").
-- Two staircases stay as the core vertical decision; do NOT add a third (chokepoints are the point).
-
-### DEPENDENCY
-Needs the hand sketch (floor-by-floor room adjacency, stair landings, doors, windows, kid-memory hiding spots). Listing data gives room names, not spatial layout. **This sprint is blocked until the sketch exists.** Until then, Sprints 2/4/5 proceed on the test house.
+- Guarantee at least one full-loop chase path on the main floor (no instant dead-end).
+- Keep 2–3 *intentional* dead ends (basement utility, a far bedroom) as high-risk hiding pockets.
+- Two staircases (main↔upstairs, main↔basement) are the core vertical decisions — do NOT add more; chokepoints are the point.
 
 ### Claude Code prompt frame for Sprint 3
 ```
-MILESTONE: Gray-box the Maple Street house from the attached layout.
-- Build 3 levels, room volumes per the sketch, 2 staircases + laundry chute.
-- Place NavigationRegion3D covering all walkable space; bake navmesh.
-- Author the monster patrol waypoint loop touching all 3 floors.
-- Place 4 hiding volumes, objective clue-spawn anchors, 3 escape-route exits.
-- Verify a full-loop chase path exists on the main floor.
-- Constants (room scale, hallway width) in FEEL.md.
-ACCEPTANCE: monster patrols all 3 floors; a chase can run a full loop without
-dead-ending; every objective anchor and hiding spot is reachable by navmesh.
+MILESTONE: Add a basement level to the existing test house. Gray-box only.
+- Add one staircase down from the main floor to a new basement.
+- Basement layout: open rec room (darkest lighting in the game) + a dead-end
+  utility/laundry pocket + a walkout door/window escape exit.
+- Extend NavigationRegion3D to cover the basement; re-bake navmesh.
+- Extend the monster patrol waypoint loop to include the basement.
+- Place the Breaker objective anchor in the utility pocket; register the
+  walkout as a third escape-route exit.
+- Verify: monster can path down and back up; a chase can still run a full
+  main-floor loop; every objective anchor + hiding spot reachable by navmesh.
+- Basement lighting constants + any new room-scale values in FEEL.md.
+ACCEPTANCE: players can descend to the basement, solve the Breaker in the dark,
+and escape via the walkout; the monster patrols and chases across all 3 floors
+without navmesh gaps.
 ```
 
 ---
@@ -222,7 +227,7 @@ This is the target experience once Sprints 1–5 are in. 4–6 players, ~10-minu
 |---|---|---|
 | Now–2 | finish multiplayer sync → Sprint 0 → Sprint 1 | Lobby works, then first complete playable round |
 | 3–4 | Sprint 2 | Full objective catalog live |
-| 5–6 | Sprint 3 (needs sketch) + art pass 1 | Real house, Steam page live, wishlists start |
+| 5–6 | Sprint 3 (basement) + art pass 1 | 3-floor test house, Steam page live, wishlists start |
 | 7–8 | Sprint 4 | Player-monster, eye-states, full juice; playtests + TikTok pipeline |
 | 8–9 | Sprint 5 | Narrative, Scrapbook, bookends |
 | 10–11 | hardening + beta | Netcode, settings, Steam build pipeline, closed beta |
