@@ -187,9 +187,12 @@ you see your **friends'** eyes go wide too.
 
 The Housesitter's **shush** (`shush_range` 4.0, `shush_cooldown` 3.5) fires when
 it corners a survivor mid-chase — "go to sleep." Its lullaby **hum swells** as it
-nears the closest survivor (−12→−3 dB over 3–15m). Getting cocooned **snaps the
-camera inside the bag** (spring pulls to 0.12m) so the dark overlay reads as
-fabric — claustrophobia as punishment.
+nears the closest survivor (−12→−3 dB over 3–15m). Getting cocooned plays a ~1.8s first-person **catch stinger** (`STINGER_DUR`):
+the camera snaps inside the bag (spring pulls to 0.12m), the Housesitter's pale
+face looms into frame, the shush plays, and the fabric dark **irises closed**,
+then hands off to the cocoon-wait overlay. Non-blocking (local camera only — the
+round keeps simulating); resets on rescue / new round. Gray-box face (a rounded
+mask + eye-pits) swaps to the real monster model in the art pass.
 
 > Client audio note: creak/shush/hum-swell run in the host's monster
 > `_physics_process`; clients get the looping hum + screech via the existing

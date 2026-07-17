@@ -51,6 +51,11 @@ var _tracker_label: Label
 var _debug_label: Label
 var _pips: Array[ColorRect] = []
 var _cocoon_overlay: Control
+var _cocoon_text: Label
+var _stinger_face: Control
+var _shush_ui: AudioStreamPlayer
+var _stinger_t: float = 0.0        ## catch-stinger countdown (>0 = playing)
+const STINGER_DUR := 1.8
 var _results_overlay: Control
 var _results_label: Label
 var _phone_panel: PanelContainer
@@ -451,14 +456,43 @@ void fragment() {
 	_cocoon_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_cocoon_overlay.visible = false
 	layer.add_child(_cocoon_overlay)
-	var cocoon_text := Label.new()
-	cocoon_text.text = "COCOONED\n\nYou are zipped in tight.\nA friend must hold E next to you for 5 seconds."
-	cocoon_text.set_anchors_preset(Control.PRESET_CENTER)
-	cocoon_text.position = Vector2(-260, -60)
-	cocoon_text.custom_minimum_size = Vector2(520, 120)
-	cocoon_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	cocoon_text.add_theme_font_size_override("font_size", 24)
-	_cocoon_overlay.add_child(cocoon_text)
+	_cocoon_text = Label.new()
+	_cocoon_text.text = "COCOONED\n\nYou are zipped in tight.\nA friend must hold E next to you for 5 seconds."
+	_cocoon_text.set_anchors_preset(Control.PRESET_CENTER)
+	_cocoon_text.position = Vector2(-260, -60)
+	_cocoon_text.custom_minimum_size = Vector2(520, 120)
+	_cocoon_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_cocoon_text.add_theme_font_size_override("font_size", 24)
+	_cocoon_overlay.add_child(_cocoon_text)
+
+	# Catch stinger: the Housesitter's pale face looms in as it tucks you in.
+	# A rounded mask + two dark eye-pits, centred, scaled up over ~1.8s. Sits on
+	# its own layer ABOVE the fabric dark so it reads before the iris closes.
+	_stinger_face = Control.new()
+	_stinger_face.set_anchors_preset(Control.PRESET_CENTER)
+	_stinger_face.custom_minimum_size = Vector2(240, 320)
+	_stinger_face.size = Vector2(240, 320)
+	_stinger_face.position = Vector2(-120, -160)
+	_stinger_face.pivot_offset = Vector2(120, 160)
+	_stinger_face.visible = false
+	_cocoon_overlay.add_child(_stinger_face)
+	var mask := Panel.new()
+	var mask_style := StyleBoxFlat.new()
+	mask_style.bg_color = Color(0.90, 0.86, 0.72)
+	mask_style.set_corner_radius_all(110)
+	mask.add_theme_stylebox_override("panel", mask_style)
+	mask.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_stinger_face.add_child(mask)
+	for ex: float in [-1.0, 1.0]:
+		var pit := ColorRect.new()
+		pit.color = Color(0.03, 0.03, 0.05)
+		pit.size = Vector2(46, 64)
+		pit.position = Vector2(120 + ex * 52 - 23, 120)
+		_stinger_face.add_child(pit)
+
+	_shush_ui = AudioStreamPlayer.new()
+	_shush_ui.stream = SoundKit.get_stream("shush")
+	add_child(_shush_ui)
 
 	# Results screen.
 	_results_overlay = ColorRect.new()
@@ -508,6 +542,7 @@ func _enter_lobby() -> void:
 	_cocoon_overlay.visible = false
 	_phone_panel.visible = false
 	_blur_overlay.visible = false
+	_reset_stinger()
 	_clear_objectives()
 	_set_exits_locked(true)
 	_player.respawn()
@@ -775,6 +810,13 @@ func _cocoon_local() -> void:
 		return
 	_player.cocoon()
 	_cocoon_overlay.visible = true
+	# Kick off the first-person "tucked in" stinger: face looms + shush + the
+	# fabric irises closed, then hands off to the cocoon-wait overlay.
+	_stinger_t = STINGER_DUR
+	_stinger_face.visible = true
+	_stinger_face.scale = Vector2(0.4, 0.4)
+	_cocoon_text.visible = false
+	_shush_ui.play()
 	print("[NETTEST] cocooned (me)")
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -786,6 +828,7 @@ func _apply_rescue(victim_pid: int) -> void:
 	if victim_pid == my_id:
 		_player.rescue()
 		_cocoon_overlay.visible = false
+		_reset_stinger()
 		print("[NETTEST] rescued (me)")
 	elif _remote_bags.has(victim_pid):
 		_remote_bags[victim_pid].set_meta("cocooned", false)
@@ -952,6 +995,7 @@ func _process(delta: float) -> void:
 		_pips[i].color = PIP_ON if _player.stamina >= float(i + 1) else PIP_OFF
 
 	_update_eyes(delta)
+	_update_stinger(delta)
 
 	_prompt_label.text = ""
 	if phase == Phase.ROUND:
@@ -1102,6 +1146,27 @@ func _update_eyes(delta: float) -> void:
 func _alert_over(mood: int) -> bool:
 	# ALERT (scared-wide) overrides the calm moods, not the committed ones.
 	return mood == BagEyes.Mood.IDLE or mood == BagEyes.Mood.DROOP
+
+func _update_stinger(delta: float) -> void:
+	if _stinger_t <= 0.0:
+		return
+	_stinger_t -= delta
+	var p := clampf(1.0 - _stinger_t / STINGER_DUR, 0.0, 1.0)
+	# Face looms in (scales up), then fades as the fabric dark irises closed.
+	var s := lerpf(0.4, 1.55, minf(p / 0.65, 1.0))
+	_stinger_face.scale = Vector2(s, s)
+	_stinger_face.modulate.a = 1.0 - clampf((p - 0.7) / 0.3, 0.0, 1.0)
+	(_cocoon_overlay as ColorRect).color.a = lerpf(0.28, 0.94, p * p)
+	if _stinger_t <= 0.0:  # done — hand off to the cocoon-wait overlay
+		_stinger_face.visible = false
+		_cocoon_text.visible = true
+		(_cocoon_overlay as ColorRect).color.a = 0.94
+
+func _reset_stinger() -> void:
+	_stinger_t = 0.0
+	_stinger_face.visible = false
+	_cocoon_text.visible = true
+	(_cocoon_overlay as ColorRect).color.a = 0.94
 
 func _update_camera(delta: float) -> void:
 	var lookback_target := 1.0 if Input.is_key_pressed(KEY_Q) else 0.0
