@@ -258,9 +258,15 @@ func _can_see(t: Node3D, delta: float, need_motion: bool) -> bool:
 	var flat := Vector3(to.x, 0.0, to.z).normalized()
 	if flat.dot(_facing) < cos(deg_to_rad(sight_fov_deg * 0.5)):
 		return false
+	return _los_to(t)
+
+# Clear line of sight to a target? A wall (physics layer 1 = world geometry)
+# between us blocks it. Works for the RigidBody player (ray reaches it) and for
+# collider-less remote ghosts (a clear ray hits nothing = LOS).
+func _los_to(t: Node3D) -> bool:
 	var space := get_world_3d().direct_space_state
 	var query := PhysicsRayQueryParameters3D.create(
-		global_position + Vector3.UP * 0.3, pos + Vector3.UP * 0.3, 1)
+		global_position + Vector3.UP * 0.3, t.global_position + Vector3.UP * 0.3, 1)
 	var hit := space.intersect_ray(query)
 	return hit.is_empty() or hit["collider"] == t
 
@@ -361,7 +367,10 @@ func _physics_process(delta: float) -> void:
 				for t: Node3D in _targets():
 					if _flag(t, "cocooned") or _flag(t, "hidden"):
 						continue
-					if global_position.distance_to(t.global_position) <= lunge_hit_radius:
+					# Distance AND clear line of sight — no grabbing through walls
+					# (the body is collision-free, so distance alone isn't enough).
+					if global_position.distance_to(t.global_position) <= lunge_hit_radius \
+							and _los_to(t):
 						lunged_hit.emit(t)
 						_lunge_cd = lunge_cooldown
 						_set_state(State.PATROL)
