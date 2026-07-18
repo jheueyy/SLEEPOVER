@@ -1,0 +1,49 @@
+{
+  "_comment": "SLEEPOVER lore fragments. Story is delivered through these collectibles, never cutscenes. Tone: Goosebumps, creepy-cute, PG-13, zero gore. Gaps and contradictions are DELIBERATE — the mystery is meant to be argued about. type: tape|polaroid|crayon|clipping|flyer. Tapes play audio on pickup (body is the transcript). Edit freely; ids are referenced by LoreFragments.PAGES.",
+  "fragments": [
+    { "id": "flyer_wren", "type": "flyer", "title": "A Babysitting Flyer",
+      "body": "MISS WREN'S OVERNIGHT SITTING\nYour little ones will sleep like angels.\nEst. 1978 - No night is too long.\nGood children get tucked in first." },
+    { "id": "tape_booking", "type": "tape", "title": "Answering-Machine Tape",
+      "body": "*click* \"Hi, it's the Delaneys, booking Miss Wren for Friday. The kids are SO excited - they've got their sleeping bags laid out already. Back by midnight. Thank you!\" *beep*" },
+    { "id": "clipping_estab", "type": "clipping", "title": "Newspaper Clipping",
+      "body": "MAPLE ST. - Neighborhood sitter beloved for a 'magic lullaby' that gets any child to sleep. \"You hum it once,\" one parent laughed, \"and they're out cold.\"" },
+    { "id": "polaroid_porch", "type": "polaroid", "title": "Polaroid: The Porch",
+      "body": "A lit porch at night. A tall, thin silhouette stands at the door, just too far from the bulb to have a face. Handwriting on the white border: 'she's here!!'" },
+
+    { "id": "polaroid_pile", "type": "polaroid", "title": "Polaroid: The Pile",
+      "body": "Four kids zipped in sleeping bags on a living-room floor, all fast asleep. A fifth bag lies open and empty. Nobody remembers a fifth kid." },
+    { "id": "crayon_nicelady", "type": "crayon", "title": "Crayon Drawing",
+      "body": "A tall smiling lady, arms very long, a music note over her head. Underneath in shaky letters: 'the nise lady sings so we sleep.'" },
+    { "id": "tape_giggles", "type": "tape", "title": "Answering-Machine Tape",
+      "body": "*click* Kids giggling, a pillow-fight thump. A soft, patient \"shhhh.\" The giggling stops all at once. Then just humming - low, sweet, endless - until the tape runs out. *beep*" },
+    { "id": "crayon_dontlook", "type": "crayon", "title": "Crayon Drawing",
+      "body": "Stick figures under blankets. One figure stands over them, taller than the ceiling. Caption: 'dont look at her and she tucks you in nice. look and she sings LOUDER.'" },
+
+    { "id": "clipping_norule", "type": "clipping", "title": "Torn Clipping",
+      "body": "...and by sunrise every child was found asleep and unharmed, not a scratch on a single one of them, tucked in so neatly the mothers wept with relief--" },
+    { "id": "tape_rules", "type": "tape", "title": "Answering-Machine Tape",
+      "body": "*click* A kid whispering, close to the phone: \"If you hear the humming, get in your bag. If the porch light dies, she's already inside. You just gotta last till the sun. That's the rule.\" *beep*" },
+    { "id": "crayon_sunrise", "type": "crayon", "title": "Crayon Drawing",
+      "body": "A huge yellow sun in the corner. The tall lady walks away from the house, small and hunched. Caption: 'when the sun comes up she HAS to go home.'" },
+    { "id": "flyer_backside", "type": "flyer", "title": "Flyer (Back Side)",
+      "body": "Fine print, tiny: 'Miss Wren does not work past dawn. Please leave the porch light on for as long as you are able. Do not unzip the children once they are settled.'" },
+
+    { "id": "clipping_missing", "type": "clipping", "title": "Newspaper Clipping",
+      "body": "SITTER VANISHES AFTER SLEEPOVER. Children told police she \"went to sleep in the big chair and just didn't wake up.\" No sitter was ever found. The porch bulb had burned out." },
+    { "id": "tape_parents_late", "type": "tape", "title": "Answering-Machine Tape",
+      "body": "*click* An engine, panic: \"Baby, we're stuck, the roads are - listen to me, do NOT let her tuck you in, stay awake, stay awake until we get th--\" *the tape eats the rest* *beep*" },
+    { "id": "polaroid_empty", "type": "polaroid", "title": "Polaroid: The Morning After",
+      "body": "The same living room by daylight. Five sleeping bags, all empty, all unzipped from the INSIDE. No kids. No mess. Someone drew a tiny sun in the corner in pen." },
+    { "id": "crayon_two", "type": "crayon", "title": "Crayon Drawing",
+      "body": "Two identical tall ladies now, holding hands, one music note each. Caption: 'there were two of her tonite. mikey saw. mikey isnt here anymore but its ok she tucked him in.'" },
+
+    { "id": "clipping_resold", "type": "clipping", "title": "Newspaper Clipping",
+      "body": "REAL ESTATE: The Maple St. house has sold again - the sixth family in ten years. Neighbors, unbothered, describe faint 'lullabies' on quiet nights. \"Comes with the place,\" one shrugged." },
+    { "id": "tape_hum_only", "type": "tape", "title": "Answering-Machine Tape",
+      "body": "*click* No message. No voices. Only the lullaby - the same slow hum, forty seconds of it, coming from somewhere behind whoever left the tape running. *beep*" },
+    { "id": "polaroid_window", "type": "polaroid", "title": "Polaroid: The Window",
+      "body": "Taken from OUTSIDE, looking in through dark glass. A face is pressed too close to the pane to focus - all soft cheek and a wide, gentle smile. Border reads: 'smile!'" },
+    { "id": "flyer_new", "type": "flyer", "title": "A New Flyer",
+      "body": "The same design, the same lady, a different phone number. Dated this year. 'MISS WREN'S OVERNIGHT SITTING - still here, still singing. Ask about our sleepover special.'" }
+  ]
+}

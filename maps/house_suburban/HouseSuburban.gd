@@ -242,6 +242,20 @@ static func patrol_points() -> Array[Vector3]:
 static func scaled(p: Vector3) -> Vector3:
 	return Vector3(p.x * S, p.y, p.z * S)
 
+## Anchor pool for lore fragments — the union of every objective's clue-spawn
+## spots (spread across all 3 floors), so lore-hunting shares the exact same risk
+## and traversal as objective clues. Returned scaled, deduped.
+static func fragment_anchors() -> Array[Vector3]:
+	var out: Array[Vector3] = []
+	var pools: Array = [CLUE_SPOTS, GARAGE_CLUE_SPOTS, BREAKER_DIAGRAM_SPOTS,
+		GLASSES_SPOTS, [DOG_SNACK_SPOT]]
+	for pool: Array in pools:
+		for p: Vector3 in pool:
+			var s := scaled(p)
+			if not out.has(s):
+				out.append(s)
+	return out
+
 # ── Floors & distribution ────────────────────────────────────────────────────
 enum Floor { BASEMENT, GROUND, UPSTAIRS }
 

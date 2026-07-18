@@ -23,6 +23,10 @@ var _roster_box: VBoxContainer
 var _ready_btn: Button
 var _start_btn: Button
 var _code_label: Label
+var _scrapbook: Control
+var _scrapbook_content: VBoxContainer
+var _scrapbook_count: Label
+var _skin_row: HBoxContainer
 
 func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
@@ -36,6 +40,11 @@ func _ready() -> void:
 	_build_ui()
 
 	if args.has("--selftest"):
+		# Smoke-test the dynamic Scrapbook UI build (labels + skin swatches) so a
+		# refresh-time error surfaces in the harness, then hand off to the game.
+		_refresh_scrapbook()
+		print("[SELFTEST] scrapbook UI: built %d rows, %d skins" % [
+			_scrapbook_content.get_child_count(), _skin_row.get_child_count()])
 		# Solo deterministic harness: straight into the game, no menu, and let
 		# Main._ready drive the selftest itself (don't call begin()).
 		_show(State.GAME)
@@ -61,6 +70,11 @@ func _build_ui() -> void:
 	_ui_layer.add_child(_lobby)
 	_settings = _build_settings()
 	_ui_layer.add_child(_settings)
+	_scrapbook = _build_scrapbook()
+	_ui_layer.add_child(_scrapbook)
+	Scrapbook.changed.connect(func() -> void:
+		if _scrapbook.visible:
+			_refresh_scrapbook())
 
 func _build_menu() -> Control:
 	var root := VBoxContainer.new()
@@ -90,6 +104,7 @@ func _build_menu() -> Control:
 		else:
 			_menu_status.text = "enter the 6-character code first"))
 
+	root.add_child(_button("SCRAPBOOK", func() -> void: _open_scrapbook()))
 	root.add_child(_button("SETTINGS", func() -> void: _settings.visible = true))
 	root.add_child(_button("QUIT", func() -> void: get_tree().quit()))
 
@@ -141,6 +156,7 @@ func _build_lobby() -> Control:
 	btns.add_child(_button("INVITE", func() -> void: SteamManager.invite_overlay()))
 	btns.add_child(_button("LEAVE", func() -> void: _leave_to_menu()))
 	root.add_child(btns)
+	root.add_child(_button("SCRAPBOOK / SKINS", func() -> void: _open_scrapbook()))
 	return root
 
 func _build_settings() -> Control:
@@ -193,6 +209,115 @@ func _build_settings() -> Control:
 	box.add_child(_button("BACK", func() -> void: _settings.visible = false))
 	return panel
 
+# ── The Scrapbook (lore + cosmetic unlocks) ────────────────────────────────
+
+func _build_scrapbook() -> Control:
+	var panel := PanelContainer.new()
+	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	panel.visible = false
+	var margin := MarginContainer.new()
+	for side: String in ["left", "right", "top", "bottom"]:
+		margin.add_theme_constant_override("margin_" + side, 48)
+	panel.add_child(margin)
+	var outer := VBoxContainer.new()
+	outer.add_theme_constant_override("separation", 10)
+	margin.add_child(outer)
+
+	var title := Label.new()
+	title.text = "THE SCRAPBOOK"
+	title.add_theme_font_size_override("font_size", 36)
+	outer.add_child(title)
+	_scrapbook_count = Label.new()
+	_scrapbook_count.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
+	outer.add_child(_scrapbook_count)
+
+	# The fragments, page by page — scrolls.
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	outer.add_child(scroll)
+	_scrapbook_content = VBoxContainer.new()
+	_scrapbook_content.add_theme_constant_override("separation", 6)
+	_scrapbook_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(_scrapbook_content)
+
+	# Cosmetics — the bag skins, unlocked by filling pages.
+	outer.add_child(_label("BAG SKINS  (fill a page to unlock)"))
+	_skin_row = HBoxContainer.new()
+	_skin_row.add_theme_constant_override("separation", 6)
+	outer.add_child(_skin_row)
+
+	outer.add_child(_button("BACK", func() -> void: _scrapbook.visible = false))
+	return panel
+
+func _open_scrapbook() -> void:
+	_settings.visible = false
+	_refresh_scrapbook()
+	_scrapbook.visible = true
+
+func _refresh_scrapbook() -> void:
+	_scrapbook_count.text = "Collected  %d / %d fragments" % [
+		Scrapbook.collected_count(), LoreFragments.count()]
+	for c in _scrapbook_content.get_children():
+		c.queue_free()
+	var pages: Array = LoreFragments.PAGES
+	for i in pages.size():
+		var page: Dictionary = pages[i]
+		var done := Scrapbook.page_complete(i)
+		var skin_name: String = BagVisual.SKINS[int(page["unlocks_skin"]) % BagVisual.SKINS.size()]["name"]
+		var head := Label.new()
+		head.text = "\n📖 %s   —   %s %s" % [page["title"],
+			("UNLOCKED: " + skin_name) if done else ("locked skin: " + skin_name),
+			"✓" if done else ""]
+		head.add_theme_font_size_override("font_size", 22)
+		head.add_theme_color_override("font_color",
+			Color(0.6, 1.0, 0.6) if done else Color(0.85, 0.85, 0.85))
+		_scrapbook_content.add_child(head)
+		for fid: String in page["fragments"]:
+			_scrapbook_content.add_child(_fragment_entry(fid))
+	_refresh_skins()
+
+func _fragment_entry(fid: String) -> Control:
+	var box := VBoxContainer.new()
+	var frag: Dictionary = LoreFragments.by_id(fid)
+	if Scrapbook.has(fid):
+		var t := Label.new()
+		t.text = "  ✦ %s  [%s]" % [frag.get("title", fid), str(frag.get("type", "")).to_upper()]
+		t.add_theme_color_override("font_color", Color(1.0, 0.9, 0.55))
+		box.add_child(t)
+		var b := Label.new()
+		b.text = "     " + str(frag.get("body", "")).replace("\n", "\n     ")
+		b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		b.custom_minimum_size = Vector2(640, 0)
+		b.add_theme_color_override("font_color", Color(0.82, 0.82, 0.8))
+		box.add_child(b)
+	else:
+		var t := Label.new()
+		t.text = "  ✦ ??? — not yet found"
+		t.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
+		box.add_child(t)
+	return box
+
+func _refresh_skins() -> void:
+	for c in _skin_row.get_children():
+		c.queue_free()
+	for i in BagVisual.SKINS.size():
+		var unlocked := Scrapbook.is_skin_unlocked(i)
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(80, 54)
+		var col: Color = BagVisual.SKINS[i]["base"]
+		b.modulate = col if unlocked else col.darkened(0.6)
+		b.disabled = not unlocked
+		var mark := "◉ " if i == Scrapbook.selected_skin else ""
+		b.text = "%s%s" % [mark, BagVisual.SKINS[i]["name"] if unlocked else "LOCKED"]
+		if unlocked:
+			var idx := i
+			b.pressed.connect(func() -> void:
+				Scrapbook.set_selected_skin(idx)
+				_refresh_skins()
+				_refresh_roster())
+		_skin_row.add_child(b)
+
 # ── Flow ───────────────────────────────────────────────────────────────────
 
 func _show(s: State) -> void:
@@ -204,6 +329,8 @@ func _show(s: State) -> void:
 	_lobby.visible = s == State.LOBBY
 	if s != State.MENU:
 		_settings.visible = false
+	if s == State.GAME and _scrapbook:
+		_scrapbook.visible = false
 
 func _on_lobby_ready(_lobby_id: int, is_host: bool) -> void:
 	LobbyManager.enter_lobby(SteamManager.persona())

@@ -13,6 +13,9 @@ enum Phase { LOBBY, LIGHTS_OUT, ROUND, RESULTS }
 @export var lights_out_duration: float = 10.0
 @export var round_duration: float = 600.0   ## 10 minute night
 @export var spawn_stair_clearance: float = 3.0  ## monster won't spawn this close to a staircase
+@export var fragment_spawn_min: int = 3      ## lore fragments seeded per round (min)
+@export var fragment_spawn_max: int = 4      ## …and max; host rolls a count in [min,max]
+@export var outro_duration: float = 6.0      ## sunrise / all-cocooned bookend length (<=10s)
 
 @export_group("Camera")
 @export var cam_height: float = 0.9
@@ -63,6 +66,11 @@ var _breathing: AudioStreamPlayer   ## heavy in-bag breathing loop (cocooned)
 const INBAG_BUS := "InBag"
 var _results_overlay: Control
 var _results_label: Label
+# Outro bookends (sunrise / all-tucked-in): a short overlay over the results.
+var _outro_overlay: ColorRect
+var _outro_label: Label
+var _outro_active: bool = false
+var _outro_t: float = 0.0
 var _phone_panel: PanelContainer
 var _phone_label: Label
 
@@ -92,10 +100,20 @@ var _monster_fx_state: int = -1
 # Unzip channel: grabbing a clue/item means unzipping the bag — a hold-E channel
 # that takes time and broadcasts a loud RRRIP. Panic-fumbles (+time) in a chase.
 var _unzip_target: Objective = null
+var _unzip_frag: Fragment = null   ## a lore fragment being unzipped (vs an objective grab)
 var _unzip_t: float = 0.0
 var _unzip_dur: float = 0.0
 var _unzip_panic: bool = false
 const PROMPT_POS := Vector2(-260, -110)
+# Lore fragments (this round)
+var _fragments: Array[Fragment] = []
+var _frag_collected_ids: Array[String] = []   ## host: ids already claimed this round
+var _frag_spawned: int = 0                     ## how many were seeded this round
+var _frag_panel: Control
+var _frag_title: Label
+var _frag_body: Label
+var _frag_panel_t: float = 0.0
+var _tape_ui: AudioStreamPlayer
 
 # Glasses blur (post-process on the one blurred player)
 var _blur_overlay: ColorRect
@@ -297,6 +315,36 @@ func _run_selftest() -> void:
 	print("[SELFTEST] floors: clue-spread(<=2, span, upstairs)=%s spawn-clear-of-stairs=%s" % [
 		spread_ok, stair_ok])
 	pass_all = pass_all and spread_ok and stair_ok
+
+	# 11. LORE FRAGMENTS + SCRAPBOOK. Fragments spawn 3-4 at clue anchors; a claim
+	# is once-per-lobby (duplicates ignored); collecting fills the Scrapbook, which
+	# unlocks a skin and survives a save/load round-trip.
+	_apply_phase(Phase.LOBBY, {})
+	_host_start_round()
+	var frag_ok := _fragments.size() >= fragment_spawn_min and _fragments.size() <= fragment_spawn_max
+	var first_id := _fragments[0].id() if not _fragments.is_empty() else ""
+	_authoritative_collect_fragment(first_id, 1)
+	_authoritative_collect_fragment(first_id, 1)  # duplicate — must be ignored
+	var claim_ok := _collected_this_round() == 1 and _fragment_by_id(first_id).collected
+	# Scrapbook: snapshot, complete page 0, assert unlock + persistence, then restore.
+	var backup := Scrapbook.collected.duplicate()
+	var sel_backup := Scrapbook.selected_skin
+	var page0: Array = LoreFragments.PAGES[0]["fragments"]
+	var page0_skin := int(LoreFragments.PAGES[0]["unlocks_skin"])
+	var pre_locked := not Scrapbook.is_skin_unlocked(page0_skin)
+	for fid: String in page0:
+		Scrapbook.collect(fid)
+	var unlock_ok := Scrapbook.page_complete(0) and Scrapbook.is_skin_unlocked(page0_skin)
+	Scrapbook.save_game()
+	Scrapbook.collected = []
+	Scrapbook.load_game()
+	var persist_ok := Scrapbook.page_complete(0)   # reloaded from disk
+	Scrapbook.collected = backup                   # restore the dev's real save
+	Scrapbook.selected_skin = sel_backup
+	Scrapbook.save_game()
+	print("[SELFTEST] lore: spawn3-4=%s claim-once=%s skin-was-locked=%s unlock=%s persist=%s" % [
+		frag_ok, claim_ok, pre_locked, unlock_ok, persist_ok])
+	pass_all = pass_all and frag_ok and claim_ok and pre_locked and unlock_ok and persist_ok
 
 	print("[SELFTEST] RESULT: %s" % ("ALL PASS" if pass_all else "FAIL"))
 	get_tree().quit(0 if pass_all else 1)
@@ -555,6 +603,30 @@ void fragment() {
 	_breathing.volume_db = -3.0
 	add_child(_breathing)
 
+	# Lore-fragment reader: a bottom panel that shows a collected fragment's title
+	# + body for a few seconds. Tapes "play" a procedural tape sound (no voice).
+	_frag_panel = PanelContainer.new()
+	_frag_panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	_frag_panel.position = Vector2(-320, -240)
+	_frag_panel.custom_minimum_size = Vector2(640, 180)
+	_frag_panel.visible = false
+	layer.add_child(_frag_panel)
+	var frag_box := VBoxContainer.new()
+	frag_box.add_theme_constant_override("separation", 6)
+	_frag_panel.add_child(frag_box)
+	_frag_title = Label.new()
+	_frag_title.add_theme_font_size_override("font_size", 22)
+	_frag_title.add_theme_color_override("font_color", Color(1.0, 0.9, 0.55))
+	frag_box.add_child(_frag_title)
+	_frag_body = Label.new()
+	_frag_body.custom_minimum_size = Vector2(620, 0)
+	_frag_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_frag_body.add_theme_font_size_override("font_size", 18)
+	frag_box.add_child(_frag_body)
+	_tape_ui = AudioStreamPlayer.new()
+	_tape_ui.stream = SoundKit.get_stream("tape")
+	add_child(_tape_ui)
+
 	# Results screen.
 	_results_overlay = ColorRect.new()
 	(_results_overlay as ColorRect).color = Color(0.02, 0.02, 0.05, 0.9)
@@ -568,6 +640,22 @@ void fragment() {
 	_results_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_results_label.add_theme_font_size_override("font_size", 26)
 	_results_overlay.add_child(_results_label)
+
+	# Outro bookend overlay: sits ON TOP of the results for a few seconds (sunrise
+	# glow or a quiet fade) then lifts to reveal the results. The results text is
+	# set underneath immediately, so nothing about the outcome is delayed logically.
+	_outro_overlay = ColorRect.new()
+	_outro_overlay.color = Color(0, 0, 0, 0)
+	_outro_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_outro_overlay.visible = false
+	layer.add_child(_outro_overlay)
+	_outro_label = Label.new()
+	_outro_label.set_anchors_preset(Control.PRESET_CENTER)
+	_outro_label.position = Vector2(-300, -40)
+	_outro_label.custom_minimum_size = Vector2(600, 80)
+	_outro_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_outro_label.add_theme_font_size_override("font_size", 30)
+	_outro_overlay.add_child(_outro_label)
 
 	# Rotary phone panel.
 	_phone_panel = PanelContainer.new()
@@ -605,6 +693,7 @@ func _enter_lobby() -> void:
 	_blur_overlay.visible = false
 	_reset_cocoon_ui()
 	_clear_objectives()
+	_clear_fragments()
 	_set_exits_locked(true)
 	_player.respawn()
 	_monster.respawn()
@@ -656,7 +745,9 @@ func _host_start_round() -> void:
 	# Monster starts far from the players AND the round's clues/actions, never
 	# camped on a staircase — so every round the "action floor" is monster-free.
 	var spawn := _pick_monster_spawn(anchors)
-	var data := {"objs": objs, "blurred": blurred, "monster_spawn": spawn}
+	# Lore fragments share the clue-spawn anchors, so lore-hunting = objective risk.
+	var frags := _pick_fragments(anchors)
+	var data := {"objs": objs, "blurred": blurred, "monster_spawn": spawn, "frags": frags}
 	_apply_phase(Phase.LIGHTS_OUT, data)
 	if _net_connected():
 		_net_phase.rpc(Phase.LIGHTS_OUT, data)
@@ -709,6 +800,36 @@ func _spread_clue_indices(defs: Array) -> Dictionary:
 func _rand_from(indices: Array) -> int:
 	return indices[randi() % indices.size()]
 
+## Host: roll this round's lore fragments — a random 3-4 from the 20-fragment pool,
+## each at a distinct clue-spawn anchor that isn't already holding an objective clue.
+func _pick_fragments(used: Array[Vector3]) -> Array:
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	var want := rng.randi_range(fragment_spawn_min, fragment_spawn_max)
+	var frag_ids := LoreFragments.pick(want, rng)
+	var spots := HouseSuburban.fragment_anchors()
+	for i in range(spots.size() - 1, 0, -1):   # shuffle spots with the same rng
+		var j := rng.randi_range(0, i)
+		var tmp := spots[i]
+		spots[i] = spots[j]
+		spots[j] = tmp
+	var out: Array = []
+	var si := 0
+	for id: String in frag_ids:
+		while si < spots.size() and _anchor_taken(spots[si], used):
+			si += 1
+		if si >= spots.size():
+			break
+		out.append({"id": id, "at": spots[si]})
+		si += 1
+	return out
+
+func _anchor_taken(p: Vector3, used: Array[Vector3]) -> bool:
+	for u: Vector3 in used:
+		if p.distance_to(u) < 1.0:
+			return true
+	return false
+
 ## Pick the spawn candidate farthest (min-distance) from all round anchors,
 ## excluding any within spawn_stair_clearance of a staircase.
 func _pick_monster_spawn(anchors: Array[Vector3]) -> Vector3:
@@ -733,6 +854,7 @@ func _apply_phase(p: Phase, data: Dictionary) -> void:
 		Phase.LIGHTS_OUT:
 			_phase_timer = lights_out_duration
 			_setup_objectives(data)
+			_setup_fragments(data)
 			_player.respawn()
 			# Same on host + client (same data): the monster's LIGHTS-OUT spawn.
 			if data.has("monster_spawn"):
@@ -747,6 +869,9 @@ func _apply_phase(p: Phase, data: Dictionary) -> void:
 			_porch_dying = true
 			if _porch_light:
 				_porch_light.light_energy = 1.6  # on, about to start failing
+			_outro_active = false
+			_outro_overlay.visible = false
+			Scrapbook.mark_intro_seen()  # the porch-light intro bookend just played
 			_show_toast("LIGHTS OUT.", 3.0)
 			print("[NETTEST] phase=LIGHTS_OUT objs=%d blurred=%d spawn_floor=%d" % [
 				(data.get("objs", []) as Array).size(), data.get("blurred", 0),
@@ -800,6 +925,44 @@ func _show_results(data: Dictionary) -> void:
 	_results_overlay.visible = true
 	_cocoon_overlay.visible = false
 	_phone_panel.visible = false
+	_frag_panel.visible = false
+	_start_outro(outcome)
+
+## Play the closing bookend over the results: SUNRISE (light floods in, the
+## Housesitter withdraws) or ALL-TUCKED-IN (the house goes quiet, lullaby fades).
+## ESCAPE has no outro. ≤ outro_duration; skippable once you've seen it before.
+func _start_outro(outcome: String) -> void:
+	_monster.withdraw()  # it always leaves at the end of the night
+	if outcome == "SUNRISE":
+		_outro_overlay.color = Color(1.0, 0.93, 0.72, 0.0)  # warm dawn, fades in
+		_outro_label.text = "the sun comes up.\nshe has to go home now."
+		_outro_label.add_theme_color_override("font_color", Color(0.25, 0.2, 0.1))
+	elif outcome == "LOSS":
+		_outro_overlay.color = Color(0.02, 0.02, 0.04, 0.0)  # quiet dark
+		_outro_label.text = "the house goes quiet.\nsweet dreams."
+		_outro_label.add_theme_color_override("font_color", Color(0.8, 0.8, 0.9))
+	else:
+		_outro_active = false
+		_outro_overlay.visible = false
+		return
+	_outro_active = true
+	_outro_t = outro_duration
+	_outro_overlay.visible = true
+
+func _update_outro(delta: float) -> void:
+	if not _outro_active:
+		return
+	_outro_t -= delta
+	# Ease the overlay to ~85% opacity over the first second, hold, then it lifts.
+	var a := clampf((outro_duration - _outro_t) / 1.0, 0.0, 1.0) * 0.85
+	_outro_overlay.color.a = a
+	# Skippable after the first time you've watched one all the way through.
+	var can_skip := Scrapbook.seen_outro and (Input.is_key_pressed(KEY_SPACE) \
+		or Input.is_key_pressed(KEY_ENTER))
+	if _outro_t <= 0.0 or can_skip:
+		_outro_active = false
+		_outro_overlay.visible = false
+		Scrapbook.mark_outro_seen()
 
 # ── Objectives (data-driven; complete any 3 to arm escape) ─────────────────
 
@@ -836,6 +999,97 @@ func _clear_objectives() -> void:
 	for o: Objective in _objectives:
 		o.queue_free()
 	_objectives.clear()
+
+# ── Lore fragments (collectible narrative props) ───────────────────────────
+
+func _setup_fragments(data: Dictionary) -> void:
+	_unzip_frag = null
+	_clear_fragments()
+	_frag_collected_ids.clear()
+	for entry: Dictionary in data.get("frags", []):
+		var fdata := LoreFragments.by_id(str(entry.get("id", "")))
+		if fdata.is_empty():
+			continue
+		var fr := Fragment.new()
+		add_child(fr)
+		fr.setup(fdata, entry.get("at", Vector3.ZERO))
+		_fragments.append(fr)
+	_frag_spawned = _fragments.size()
+	print("[NETTEST] fragments spawned=%d" % _frag_spawned)
+
+func _clear_fragments() -> void:
+	for fr: Fragment in _fragments:
+		fr.queue_free()
+	_fragments.clear()
+	_frag_spawned = 0
+	if _frag_panel:
+		_frag_panel.visible = false
+
+func _fragment_by_id(id: String) -> Fragment:
+	for fr: Fragment in _fragments:
+		if fr.id() == id:
+			return fr
+	return null
+
+func _collected_this_round() -> int:
+	var n := 0
+	for fr: Fragment in _fragments:
+		if fr.collected:
+			n += 1
+	return n
+
+## Local player finished the unzip on a fragment: show its contents right away
+## (optimistic), then ask the host to commit the once-per-lobby claim.
+func _finish_fragment_pickup(fr: Fragment) -> void:
+	if fr == null or fr.collected:
+		return
+	_show_fragment(fr)
+	if _is_authority():
+		_authoritative_collect_fragment(fr.id(), _my_id())
+	else:
+		_net_request_collect.rpc_id(1, fr.id())
+
+@rpc("any_peer", "call_remote", "reliable")
+func _net_request_collect(id: String) -> void:
+	if _is_authority():
+		_authoritative_collect_fragment(id, multiplayer.get_remote_sender_id())
+
+func _authoritative_collect_fragment(id: String, by_pid: int) -> void:
+	if id == "" or _frag_collected_ids.has(id):
+		return  # first grab in the lobby wins; ignore the rest
+	_frag_collected_ids.append(id)
+	_apply_fragment_collected(id, by_pid)
+	if _net_connected():
+		_net_fragment_collected.rpc(id, by_pid)
+
+@rpc("authority", "call_remote", "reliable")
+func _net_fragment_collected(id: String, by_pid: int) -> void:
+	_apply_fragment_collected(id, by_pid)
+
+## Everyone: remove the prop, credit the whole party's Scrapbook (shared discovery),
+## and — for players who weren't the one who grabbed it — a light "someone found" note.
+func _apply_fragment_collected(id: String, by_pid: int) -> void:
+	var fr := _fragment_by_id(id)
+	if fr != null:
+		fr.mark_collected()
+	Scrapbook.collect(id)
+	if by_pid != _my_id():
+		var fdata := LoreFragments.by_id(id)
+		_show_toast("A fragment was found: %s" % fdata.get("title", "?"), 3.0)
+	print("[NETTEST] fragment collected: %s by=%d (%d/%d)" % [
+		id, by_pid, _collected_this_round(), _frag_spawned])
+
+func _show_fragment(fr: Fragment) -> void:
+	# The reader overlay: title + body, held briefly. Tapes "play" (procedural
+	# tape audio); the rest get a soft page rustle. No voice, ever.
+	_frag_title.text = fr.title()
+	_frag_body.text = fr.body()
+	_frag_panel.visible = true
+	_frag_panel_t = 7.0
+	if fr.frag_type() == "tape":
+		_tape_ui.play()
+	else:
+		SoundKit.play_at(self, _player.global_position, "zipper")
 
 func _has_objective(kind: int) -> bool:
 	for o: Objective in _objectives:
@@ -1002,15 +1256,17 @@ func _net_cocoon() -> void:
 func _cocoon_local() -> void:
 	if _player.state == SleepingBagPlayer.State.COCOONED:
 		return
-	# INSTANT hard snap: no cinematic, no AnimationPlayer. The chase cam is killed
-	# and the first-person in-bag view + fabric-dark overlay come up on the same
-	# frame (_update_camera snaps _cocoon_cam to 1 while COCOONED). WASD is locked
-	# by the player's COCOONED state; the wiggling body stays visible to others.
+	# The chase CAMERA is killed instantly (no AnimationPlayer) — _update_camera
+	# snaps _cocoon_cam to 1 while COCOONED. The fabric-dark overlay then FADES in
+	# (the "tucking in" beat: the screen settles to dark, lullaby audible through
+	# the bag) rather than popping. WASD is locked by the COCOONED state; the
+	# wiggling body stays visible to others for the rescue window.
 	_player.cocoon()
 	_unzip_target = null  # a caught player can't be mid-unzip
+	_unzip_frag = null
 	_cocoon_cam = 1.0
 	_cocoon_overlay.visible = true
-	(_cocoon_overlay as ColorRect).color.a = 0.94
+	(_cocoon_overlay as ColorRect).color.a = 0.35  # fades up to full in _process
 	_cocoon_text.visible = true
 	_shush_ui.play()
 	if not _breathing.playing:
@@ -1172,21 +1428,27 @@ func _try_interact_press() -> void:
 		return
 	if _rescue_target != null:
 		return  # rescue is the hold-E path
-	if _unzip_target != null:
+	if _unzip_target != null or _unzip_frag != null:
 		return  # already unzipping
 	var p := _player.global_position
 	# Grabbing a clue/item means unzipping the bag: a slow, loud hold-E channel.
 	for o: Objective in _objectives:
 		if o.grab_available(p):
-			_begin_unzip(o)
+			_begin_unzip(o, null)
+			return
+	# Lore fragments are picked up the same way (same risk + loud ping).
+	for fr: Fragment in _fragments:
+		if fr.near(p):
+			_begin_unzip(null, fr)
 			return
 	# Everything else (dial panels, dog hand-off, deadbolt) fires on the press.
 	for o: Objective in _objectives:
 		if o.try_interact(p):
 			return
 
-func _begin_unzip(o: Objective) -> void:
+func _begin_unzip(o: Objective, fr: Fragment) -> void:
 	_unzip_target = o
+	_unzip_frag = fr
 	_unzip_t = 0.0
 	_unzip_panic = _monster_fx_state >= NoiseMonster.State.CHASE
 	_unzip_dur = unzip_secs + (unzip_chase_penalty if _unzip_panic else 0.0)
@@ -1195,26 +1457,47 @@ func _begin_unzip(o: Objective) -> void:
 	SoundKit.play_at(self, _player.global_position, "zipper")
 
 func _update_unzip(delta: float) -> void:
-	if _unzip_target == null:
+	if _unzip_target == null and _unzip_frag == null:
 		return
 	var p := _player.global_position
-	# Cancel on release, cocoon, or moving off the clue; the grab is not committed
-	# until the channel completes (so a fumbled unzip costs you the time + noise).
-	if not Input.is_key_pressed(KEY_E) \
-			or _player.state == SleepingBagPlayer.State.COCOONED \
-			or not _unzip_target.grab_available(p):
+	# Cancel on release, cocoon, or moving off the target; the grab is not committed
+	# until the channel completes (so a fumbled unzip still costs the time + noise).
+	var still_valid := Input.is_key_pressed(KEY_E) \
+		and _player.state != SleepingBagPlayer.State.COCOONED \
+		and ((_unzip_target != null and _unzip_target.grab_available(p)) \
+			or (_unzip_frag != null and _unzip_frag.near(p)))
+	if not still_valid:
 		_unzip_target = null
+		_unzip_frag = null
 		return
 	_unzip_t += delta
 	if _unzip_t >= _unzip_dur:
-		_unzip_target.try_interact(p)  # zipped open — grab it now
+		if _unzip_target != null:
+			_unzip_target.try_interact(p)  # zipped open — grab it now
+		elif _unzip_frag != null:
+			_finish_fragment_pickup(_unzip_frag)
 		_unzip_target = null
+		_unzip_frag = null
 
 # ── Frame loop ─────────────────────────────────────────────────────────────
 
 func _process(delta: float) -> void:
 	_update_camera(delta)
 	_player.control_yaw = _yaw
+
+	# Fragment reader auto-dismiss.
+	if _frag_panel and _frag_panel.visible:
+		_frag_panel_t -= delta
+		if _frag_panel_t <= 0.0:
+			_frag_panel.visible = false
+
+	# Cocoon "tucking in": the fabric-dark overlay settles to full over ~0.4s.
+	if _cocoon_overlay.visible and _player.state == SleepingBagPlayer.State.COCOONED:
+		var cc := (_cocoon_overlay as ColorRect).color
+		cc.a = move_toward(cc.a, 0.94, delta * 1.5)
+		(_cocoon_overlay as ColorRect).color = cc
+
+	_update_outro(delta)
 
 	var fwd: Vector3 = _player.facing
 	_aim.global_position = _player.global_position + fwd * 1.3 + Vector3.UP * 0.2
@@ -1274,13 +1557,14 @@ func _bodies_near(pos: Vector3, r: float) -> int:
 func _update_prompts() -> void:
 	# Unzip channel takes priority: show progress, and shake the text (NOT the
 	# camera) while panic-fumbling in a chase to sell the shaky hands.
-	if _unzip_target != null:
+	if _unzip_target != null or _unzip_frag != null:
 		var pct := int(clampf(_unzip_t / _unzip_dur, 0.0, 1.0) * 100.0)
+		var verb := "UNZIPPING" if _unzip_target != null else "REACHING OUT"
 		if _unzip_panic:
-			_prompt_label.text = "UNZIPPING… %d%%   — hands shaking!" % pct
+			_prompt_label.text = "%s… %d%%   — hands shaking!" % [verb, pct]
 			_prompt_label.position = PROMPT_POS + Vector2(randf_range(-4, 4), randf_range(-3, 3))
 		else:
-			_prompt_label.text = "UNZIPPING… %d%%" % pct
+			_prompt_label.text = "%s… %d%%" % [verb, pct]
 			_prompt_label.position = PROMPT_POS
 		return
 	_prompt_label.position = PROMPT_POS
@@ -1294,6 +1578,11 @@ func _update_prompts() -> void:
 		if pr != "":
 			# Hint that grabs cost an unzip, so the loud channel isn't a surprise.
 			_prompt_label.text = pr + ("  (hold E: unzip)" if o.grab_available(p) else "")
+			return
+	# Lore fragment in reach.
+	for fr: Fragment in _fragments:
+		if fr.near(p):
+			_prompt_label.text = "✦ %s  (hold E: unzip)" % fr.frag_type().to_upper()
 			return
 
 func _update_tracker() -> void:
@@ -1316,6 +1605,8 @@ func _update_tracker() -> void:
 	if _escape_armed:
 		var open_names := _open_exit_names()
 		text += "\nOPEN: %s" % (", ".join(open_names) if not open_names.is_empty() else "finish a door task!")
+	if _frag_spawned > 0:
+		text += "\n\n✦ LORE  %d / %d found" % [_collected_this_round(), _frag_spawned]
 	_tracker_label.text = text
 
 func _update_phase(delta: float) -> void:
@@ -1544,7 +1835,8 @@ func begin(is_host: bool, is_test: bool, is_spectator: bool = false) -> void:
 		var slot := 1 + (multiplayer.get_unique_id() % (HouseSuburban.SPAWNS.size() - 1))
 		_player.global_position = HouseSuburban.SPAWNS[slot]
 		_player.set_spawn(_player.global_transform)
-		_player.set_skin(BagVisual.skin_for_peer(multiplayer.get_unique_id()))
+	# The local player wears the skin they picked in the Scrapbook (cosmetic unlock).
+	_player.set_skin(Scrapbook.selected_skin)
 	if is_spectator:
 		_become_spectator()
 
@@ -1642,7 +1934,10 @@ func _on_peer_disconnected(pid: int) -> void:
 
 func _spawn_remote_bag(pid: int) -> Node3D:
 	var ghost := Node3D.new()
-	var built := BagVisual.build_with_eyes(0.9, BagVisual.skin_for_peer(pid))
+	# Use the peer's chosen skin from the roster (they reported it); fall back to
+	# the deterministic per-peer skin if the roster doesn't carry one.
+	var skin := int(LobbyManager.players.get(pid, {}).get("skin", BagVisual.skin_for_peer(pid)))
+	var built := BagVisual.build_with_eyes(0.9, skin)
 	var bag: Node3D = built[0]
 	bag.position = Vector3(0, -0.45, 0)
 	ghost.add_child(bag)

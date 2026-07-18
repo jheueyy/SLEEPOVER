@@ -20,6 +20,8 @@ NoiseBus="*res://core/audio/NoiseBus.gd"
 SteamManager="*res://core/networking/SteamManager.gd"
 ; Host-authoritative lobby roster/ready/start sync.
 LobbyManager="*res://core/networking/LobbyManager.gd"
+; Persistent Scrapbook (lore fragments + cosmetic unlocks), Steam Cloud + local.
+Scrapbook="*res://core/save/Scrapbook.gd"
 
 [navigation]
 

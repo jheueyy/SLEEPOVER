@@ -11,6 +11,7 @@ extends Object
 ##   screech   — lunge windup
 ##   zipper    — rescue / unzip
 ##   breath    — heavy scared breathing heard from inside the bag (loop)
+##   tape      — answering-machine tape: deck clunk + warbly hiss (lore pickup)
 ##   click     — rotary phone dial
 
 const RATE := 22050
@@ -46,6 +47,7 @@ static func _generate(kind: String) -> AudioStreamWAV:
 		"clatter": return _to_wav(_clatter(), false)
 		"shush": return _to_wav(_shush(), false)
 		"breath": return _to_wav(_breath(), true)
+		"tape": return _to_wav(_tape(), false)
 		_: return _to_wav(_click(), false)
 
 # ── Generators (all return mono float samples in [-1, 1]) ─────────────────
@@ -188,6 +190,25 @@ static func _breath() -> PackedFloat32Array:
 		var white := randf_range(-1.0, 1.0)
 		prev = lerpf(prev, white, 0.18)          # low-pass → breathy, not sharp
 		out[i] = prev * env * 0.4
+	return out
+
+static func _tape() -> PackedFloat32Array:
+	# Answering-machine tape: a mechanical *click*, then a bed of warbly tape hiss
+	# with slow wow-and-flutter. No voice — the "message" is the transcript on screen.
+	var n := int(RATE * 1.6)
+	var out := PackedFloat32Array()
+	out.resize(n)
+	# Opening deck clunk.
+	for i in range(int(RATE * 0.05)):
+		out[i] = randf_range(-0.9, 0.9) * exp(-float(i) * 0.02)
+	var prev := 0.0
+	for i in range(int(RATE * 0.06), n):
+		var t := float(i) / RATE
+		var env := clampf((t - 0.06) / 0.1, 0.0, 1.0) * clampf((1.6 - t) / 0.25, 0.0, 1.0)
+		var white := randf_range(-1.0, 1.0)
+		prev = lerpf(prev, white, 0.25)              # band-limited hiss
+		var flutter := 0.5 + 0.5 * sin(TAU * 4.0 * t)  # wow/flutter warble
+		out[i] = prev * env * 0.22 * (0.7 + 0.3 * flutter)
 	return out
 
 static func _clatter() -> PackedFloat32Array:

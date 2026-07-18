@@ -33,6 +33,7 @@ func enter_lobby(my_name: String) -> void:
 	if _authority():
 		_connected = true
 		players[_id()] = _make_entry(my_name, _id())
+		players[_id()]["skin"] = Scrapbook.selected_skin  # my chosen cosmetic
 		roster_changed.emit()
 	elif _link_up():
 		_on_connected()   # already connected before we got here
@@ -41,7 +42,7 @@ func enter_lobby(my_name: String) -> void:
 func _on_connected() -> void:
 	# Client's transport link is up — safe to talk to the host now.
 	_connected = true
-	_register.rpc_id(1, _my_name)
+	_register.rpc_id(1, _my_name, Scrapbook.selected_skin)
 	if _want_ready:
 		_set_ready.rpc_id(1, true)
 
@@ -83,11 +84,13 @@ func start_game() -> void:
 # ── RPCs (host-authoritative) ──────────────────────────────────────────────
 
 @rpc("any_peer", "call_remote", "reliable")
-func _register(name: String) -> void:
+func _register(name: String, skin: int = -1) -> void:
 	if not _authority():
 		return
 	var pid := multiplayer.get_remote_sender_id()
 	players[pid] = _make_entry(name, pid)
+	if skin >= 0:
+		players[pid]["skin"] = skin  # the client's chosen cosmetic
 	if started:
 		players[pid]["spectator"] = true
 	_broadcast()

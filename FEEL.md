@@ -241,6 +241,47 @@ nears the closest survivor (−12→−3 dB over 3–15m).
   shake). Panels/dial/dog-hand-off/deadbolt stay instant presses. See `Objective.grab_available()`
   + `Main._begin_unzip/_update_unzip`.
 
+## Narrative layer — story through systems (Milestone)
+Tone law: **Goosebumps, not Saw** — PG-13, creepy-cute, zero gore. No cutscenes;
+the premise (something comes to put you to sleep; sunrise / the porch light are the
+tells; get in your bag) is *inferable* from the fragments + behaviour alone.
+
+| Constant | Default | What it does |
+|---|---|---|
+| `Main.fragment_spawn_min / _max` | 3 / 4 | lore fragments seeded per round (host rolls a count in range) |
+| `Main.outro_duration` | 6.0 | closing-bookend length (≤10s), sunrise / all-tucked-in |
+| `Monster.close_shush_range` | 5.0 | even NOT chasing, a survivor this close gets a gentle "shhh" |
+| `Monster.close_shush_cooldown` | 6.0 | slower cadence for the passing-by shush |
+
+- **Lore fragments** (`Fragment.gd`, content in `games/sleepover/data/lore_fragments.json`,
+  loaded by `LoreFragments.gd`). 20 fragments — tapes, polaroids, crayon drawings,
+  clippings, a flyer — with **deliberate gaps + contradictions** (the mystery is
+  meant to be argued about). Each round the host seeds a random 3–4 at
+  `HouseSuburban.fragment_anchors()` (the union of the objective clue-spawn spots),
+  so lore-hunting carries the **same risk + traversal** as objectives. Pickup is a
+  hold-E **unzip** (the same loud channel as grabbing a clue). Collection is
+  **host-authoritative, once per lobby per round** (`_net_request_collect` →
+  `_authoritative_collect_fragment` → `_net_fragment_collected`); the whole party's
+  Scrapbook is credited (shared discovery). Tapes "play" a procedural tape sound on
+  pickup (`SoundKit "tape"`) — **no voice, ever**; the message is the on-screen transcript.
+- **The Scrapbook** (`core/save/Scrapbook.gd`, autoload) — persistent meta-progression
+  saved to `user://scrapbook.save` and mirrored to **Steam Cloud** (Remote Storage;
+  fails soft to local in solo/headless). Fragments fill **5 pages of 4**
+  (`LoreFragments.PAGES`); completing a page unlocks a `BagVisual` skin (pages →
+  skins 1–5), and filling every page unlocks the two bonus skins (6–7). Opened from
+  the main menu **and** the lobby ("SCRAPBOOK / SKINS"); the chosen skin is the one
+  you wear (reported into the lobby roster, worn by your bag + shown to others).
+- **Housesitter behaviours** — the story is in what it *does*: PATROL lullaby **hum**
+  is the signature; **shush** now also fires at close range when it's not even
+  chasing (`close_shush_range`) — it isn't here to kill you, it's here to put you to
+  sleep; COCOON is the **"tucking in"** (the fabric-dark overlay *fades* up, lullaby
+  audible through the bag). It never speaks.
+- **Round bookends** (≤10s, skippable after the first view via Space/Enter, tracked
+  by `Scrapbook.seen_intro/seen_outro`): **INTRO** = the porch-light flicker-and-die
+  during LIGHTS OUT (Sprint 5); **OUTRO SUNRISE** = warm dawn floods in and the
+  Housesitter `withdraw()`s; **OUTRO ALL-TUCKED-IN** = the house goes quiet, lullaby
+  fades. `Main._start_outro/_update_outro`, overlaid on the results.
+
 ## Floor distribution (pull players + monster across all 3 floors)
 Everything used to cluster on the ground floor. Now:
 - **Objective clues** have per-floor pools (Landline/Garage/Breaker each carry

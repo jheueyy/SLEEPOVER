@@ -39,6 +39,8 @@ signal lunged_hit(target: Node3D)
 @export var lunge_cooldown: float = 1.6    ## recovery after a miss
 @export var shush_range: float = 4.0       ## chase + within this = it shushes you
 @export var shush_cooldown: float = 3.5    ## secs between shushes
+@export var close_shush_range: float = 5.0 ## even NOT chasing, this close = a gentle "shhh"
+@export var close_shush_cooldown: float = 6.0 ## slower cadence for the passing-by shush
 
 enum State { PATROL, INVESTIGATE, CHASE, LUNGE }
 
@@ -85,6 +87,7 @@ var _screech: AudioStreamPlayer3D
 var _shush: AudioStreamPlayer3D
 var _creak_cd: float = 2.0
 var _shush_cd: float = 0.0
+var _close_shush_cd: float = 0.0
 
 func _ready() -> void:
 	collision_layer = 0
@@ -190,6 +193,7 @@ func set_solo(is_solo: bool) -> void:
 
 func respawn() -> void:
 	global_transform = _spawn
+	visible = true  # in case it withdrew at the end of the last round
 	_floor_dwell = 0.0
 	_patrol_floor = -1
 	_set_state(State.PATROL)
@@ -205,6 +209,21 @@ func respawn() -> void:
 	_move_dir = Vector3.ZERO
 	if _hum.playing:
 		_hum.stop()
+
+## Round's over — the Housesitter withdraws: it stops moving and making noise and
+## slips out of sight. Used by the outro bookends (sunrise / all-tucked-in). The
+## lullaby fading out is the last thing you hear.
+func withdraw() -> void:
+	_asleep = true
+	_set_state(State.PATROL)
+	_move_dir = Vector3.ZERO
+	if _hum.playing:
+		_hum.stop()
+	if _screech.playing:
+		_screech.stop()
+	if _shush.playing:
+		_shush.stop()
+	visible = false
 
 func get_debug_text() -> String:
 	var names := ["PATROL", "INVESTIGATE", "CHASE", "LUNGE"]
@@ -484,9 +503,16 @@ func _physics_process(delta: float) -> void:
 	var hum_target := lerpf(-3.0, -12.0, clampf((nearest - 3.0) / 12.0, 0.0, 1.0))
 	_hum.volume_db = lerpf(_hum.volume_db, hum_target, clampf(3.0 * delta, 0.0, 1.0))
 	_shush_cd -= delta
+	_close_shush_cd -= delta
 	if _state == State.CHASE and nearest < shush_range and _shush_cd <= 0.0:
 		_shush.play()
 		_shush_cd = shush_cooldown
+	elif _state != State.CHASE and not _asleep and nearest < close_shush_range \
+			and _close_shush_cd <= 0.0:
+		# Not hunting yet — just passing close. A soft "shhh": it isn't here to
+		# kill you, it's here to put you to sleep. Story told through behavior.
+		_shush.play()
+		_close_shush_cd = close_shush_cooldown
 
 func _nearest_target_dist() -> float:
 	var best := INF
