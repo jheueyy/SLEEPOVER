@@ -93,6 +93,14 @@ ASLEEP → PATROL → INVESTIGATE → CHASE → LUNGE.
 | `lunge_speed_mult` | 2.3 | burst speed ÷ move_speed | — |
 | `lunge_hit_radius` | 1.1 | connect distance = COCOON | — |
 | `lunge_cooldown` | 1.6 | recovery after a miss | a missed lunge buys you time |
+| `solo_hearing_mult` | 0.6 | hearing ×0.6 (−40%) when `lobby_size == 1` | solo-test modifier so it can't zero in on the only player |
+| `solo_chase_memory` | 8.0 | chase give-up drops 12s → 8s when solo | shorter near-miss window so a lone tester can shake it |
+
+> **Solo-testing modifier.** `Monster.set_solo(is_solo)` is called at LIGHTS OUT
+> with `is_solo = lobby_size == 1` (from `Main._lobby_size()`). Solo: hearing
+> radius ×`solo_hearing_mult`, `chase_memory` = `solo_chase_memory`. Multiplayer
+> restores the base values. Base defaults are captured in `Monster._ready()` so the
+> multiplier is always applied to the exported value, never a stale one.
 
 > **Detection rules.** PATROL: a lone ping → INVESTIGATE; 3 pings in 10s → CHASE.
 > INVESTIGATE: walk to the ping, search 8s; a *second* ping → CHASE. CHASE: hunts
@@ -143,18 +151,33 @@ ASLEEP → PATROL → INVESTIGATE → CHASE → LUNGE.
 > markers, or locations; finding and shouting spots over voice is the gameplay.
 
 ## Objectives (`games/sleepover/ObjectiveDef.gd` + `Objective.gd`)
-Each round the host draws a random **5 of 6**; completing **any 3** arms escape
-and unlocks all three exits (front door, garage, basement window). Every objective
-is a CLUE → ACTION pair with a randomized clue spot; ACTIONs emit NoiseBus pings.
+Each round the host draws a random **5 of 6**; completing **any 3** arms the escape
+PHASE — but **which doors are open depends entirely on which objectives you did**
+(Sprint 5). Every objective is a CLUE → ACTION pair with a randomized clue spot;
+ACTIONs emit NoiseBus pings.
 
-| Objective | Kind | Action | Noise (sound / loudness) |
-|---|---|---|---|
-| The Landline | code 4 | read note → rotary-dial (1.5s/digit, wrong resets) | click / 0.8 |
-| The Garage Code | code 4 | read birthday → keypad (wrong = loud beep) | beep / 0.85 |
-| The Breaker | code 3 | read garage diagram → set fuse colours (keys 1-3) in basement | clatter / 0.85 |
-| The Dog Has The Keys | reach | grab pantry snack → reach the wandering dog | bark / 0.7 (barks every 4s on its own) |
-| The Deadbolt | 2-player | two bodies at the back door, hold E 3s | click / 0.5 |
-| The Glasses | find | one random player's screen is BLURRED until they find their glasses | click / 0.25 |
+| Objective | Kind | Action | Opens (exit) | Noise (sound / loudness) |
+|---|---|---|---|---|
+| The Landline | code 4 | read note → rotary-dial (1.5s/digit, wrong resets) | **FRONT DOOR** | click / 0.8 |
+| The Garage Code | code 4 | read birthday → keypad (wrong = loud beep) | **GARAGE** | beep / 0.85 |
+| The Breaker | code 3 | read garage diagram → set fuse colours (keys 1-3) in basement | **BASEMENT WINDOW** | clatter / 0.85 |
+| The Dog Has The Keys | reach | grab pantry snack → reach the wandering dog | **BACK DOOR** | bark / 0.7 (barks every 4s on its own) |
+| The Deadbolt | 2-player | two bodies at the back door, hold E 3s | — (support) | click / 0.5 |
+| The Glasses | find | one random player's screen is BLURRED until they find their glasses | — (support) | click / 0.25 |
+
+**Escape-door mapping** (`Main.EXIT_OBJECTIVE`). A door's physical blocker is
+hidden only once ITS objective is done; standing in an OPEN exit's zone while the
+escape phase is armed = you're out. Four of the six objectives are door-openers;
+only **Deadbolt** and **Glasses** are support (count toward the 3, open nothing).
+Because a 5-of-6 draw drops just one objective, **any set of 3 completions opens
+≥1 door** — every round is winnable, no soft-lock. The BACK DOOR is a new north-wall
+exit (gap into the dining room); the basement window is logic-gated (no physical
+blocker). HUD tracker names each task's door and lists which exits are OPEN.
+> *Design note (needs your call):* the standalone **Deadbolt** objective still
+> lives at the kitchen back-door spot but no longer opens a door — the DOG now owns
+> the back door per the Sprint 5 brief ("the dog has the keys to the deadbolted
+> back door"). If you'd rather Deadbolt open the back door and the Dog be support,
+> it's a one-line swap in `EXIT_OBJECTIVE`.
 
 - `Objective.NEAR` = 2.0m interaction reach; `Objective.DIAL_TIME` = 1.5s rotary windup.
 - `Objective.DOG_SPEED` = 0.9 m/s — the dog is navmesh-routed (walks through
@@ -187,16 +210,36 @@ you see your **friends'** eyes go wide too.
 
 The Housesitter's **shush** (`shush_range` 4.0, `shush_cooldown` 3.5) fires when
 it corners a survivor mid-chase — "go to sleep." Its lullaby **hum swells** as it
-nears the closest survivor (−12→−3 dB over 3–15m). Getting cocooned plays a ~1.8s first-person **catch stinger** (`STINGER_DUR`):
-the camera snaps inside the bag (spring pulls to 0.12m), the Housesitter's pale
-face looms into frame, the shush plays, and the fabric dark **irises closed**,
-then hands off to the cocoon-wait overlay. Non-blocking (local camera only — the
-round keeps simulating); resets on rescue / new round. Gray-box face (a rounded
-mask + eye-pits) swaps to the real monster model in the art pass.
+nears the closest survivor (−12→−3 dB over 3–15m).
 
 > Client audio note: creak/shush/hum-swell run in the host's monster
 > `_physics_process`; clients get the looping hum + screech via the existing
 > relay but not the swell/shush (a known gray-box gap, fine for now).
+
+## Round bookends, cocoon, unzip (Sprint 5)
+- **10-second intro bookend.** Players spawn zipped in the living room under the
+  standard low third-person chase cam. A **porch light** just outside the front
+  door (`Main._porch_light`) flickers erratically through the `lights_out_duration`
+  (10s) intro, dimming as it fails, then **dies** the instant the round begins and
+  the 10-minute timer starts. No cinematic camera work — one clean beat.
+- **Caught → cocoon is an INSTANT hard snap** (no AnimationPlayer, no stinger).
+  On the lunge hit `Main._cocoon_local()` kills the chase cam on the same frame
+  (`_cocoon_cam = 1` — camera pulled inside the bag at 0.12m), drops the full-screen
+  **fabric-dark** overlay, locks WASD (the player's COCOONED state), and starts a
+  **heavy breathing loop** (`SoundKit "breath"`) on a runtime **low-pass audio bus**
+  (`InBag`, cutoff 600 Hz) so in-bag audio is muffled — proximity voice routes here
+  too once VOIP exists. **Hold Q** = instant 180° look-back over the shoulder,
+  release snaps straight back. The wiggling body stays visible to others for the
+  5-second rescue channel. `cocooned` state syncs over the wire (`_net_cocoon` RPC
+  + `FLAG_COCOONED` on the bag-state RPC) — verified caught-on-client in ENet loopback.
+- **Unzip friction.** Grabbing a clue/item (note, snack, glasses) means unzipping:
+  a **hold-E channel** (`unzip_secs` 1.2s) that broadcasts a **loud NoiseBus ping**
+  (`unzip_loudness` 0.85) + a zipper sound the moment the seal breaks — the grab
+  isn't committed until the channel completes, so a fumbled unzip still costs the
+  time and noise. While the monster is **CHASE**-or-worse it takes `unzip_chase_penalty`
+  (+1s) longer and shows a **shaky-hand** panic prompt (text jitter, never camera
+  shake). Panels/dial/dog-hand-off/deadbolt stay instant presses. See `Objective.grab_available()`
+  + `Main._begin_unzip/_update_unzip`.
 
 ## Floor distribution (pull players + monster across all 3 floors)
 Everything used to cluster on the ground floor. Now:
@@ -222,8 +265,9 @@ is an enlarged rec room (`x3–8, z−6..−1`) plus a dead-end **utility pocket
 the SW corner that houses the **Breaker** objective. It's the intentionally
 darkest floor: room lamps below ground use `BASEMENT_LIGHT_ENERGY = 0.18`
 (vs `ROOM_LIGHT_ENERGY = 0.7`) with a cold tint. Descent = commit + lose the
-upstairs escapes + a single-stair chokepoint; the walkout (BASEMENT WINDOW exit)
-is the third escape route. Monster patrols in via the garage↔basement nav link.
+upstairs escapes + a single-stair chokepoint; the walkout (BASEMENT WINDOW exit,
+opened by the **Breaker** objective) is one of the four escape routes. Monster
+patrols in via the garage↔basement nav link.
 
 ## House scale
 `HouseSuburban.S = 1.4` — the whole floor plan is scaled 1.4x at build time

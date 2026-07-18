@@ -43,7 +43,7 @@ const MONSTER_SPAWN := Vector3(-7.7, 7.0, -4.9)
 # Walls: a/b are plan endpoints, base = floor height, gaps = [pos_along_wall, width]
 const WALLS: Array = [
 	# Ground outer shell
-	{"a": Vector2(-8, -6), "b": Vector2(8, -6), "base": 0.0},
+	{"a": Vector2(-8, -6), "b": Vector2(8, -6), "base": 0.0, "gaps": [[-0.5, 1.4]]},  # back door -> dining (the dog's keys)
 	{"a": Vector2(-8, 6), "b": Vector2(8, 6), "base": 0.0, "gaps": [[0.5, 1.2], [6.5, 1.4]]},  # front door -> hall, garage door
 	{"a": Vector2(-8, -6), "b": Vector2(-8, 6), "base": 0.0},
 	{"a": Vector2(8, -6), "b": Vector2(8, 6), "base": 0.0},
@@ -211,10 +211,13 @@ const GLASSES_SPOTS: Array = [
 	Vector3(-6.5, 3.0, 3.5),    # master bed
 ]
 
-# Escape exits (unlocked when 3 objectives are done): [name, plan center, y,
-# half-extent, has_door_blocker]. Walk into a zone while armed = ESCAPE.
+# Escape exits. Each door is unlocked by ONE specific objective (see Main's
+# EXIT_OBJECTIVE map); the escape PHASE arms at 3-of-5, but which doors are open
+# depends entirely on which objectives were completed. [name, plan center, y,
+# half-extent, door-blocker group ("" = no physical blocker, logic-gated only)].
 const EXITS: Array = [
 	{"name": "FRONT DOOR", "at": Vector3(0.5, 1.0, 7.4), "half": Vector2(1.2, 1.2), "door": "front_door"},
+	{"name": "BACK DOOR", "at": Vector3(-0.5, 1.0, -6.6), "half": Vector2(1.2, 1.2), "door": "back_door"},
 	{"name": "GARAGE", "at": Vector3(6.5, 1.0, 7.4), "half": Vector2(1.4, 1.2), "door": "garage_door"},
 	{"name": "BASEMENT WINDOW", "at": Vector3(6.5, -2.0, -5.6), "half": Vector2(1.2, 1.2), "door": ""},
 ]
@@ -366,12 +369,16 @@ static func build(parent: Node3D) -> void:
 		_box(parent, Vector3(gable_x * S, (eave_y + ridge_y) * 0.5, -3.5 * S),
 			Vector3(WALL_T, ridge_y - eave_y, 5.0 * S), COL_WALL)
 
-	# Exit doors: real blockers in the doorways. Arming escape (3 objectives)
-	# hides them and disables collision; escaping = walking out through one.
-	for door_def: Array in [["front_door", 0.5, 1.2], ["garage_door", 6.5, 1.4]]:
+	# Exit doors: real blockers in the doorways. [group, plan x, plan width, plan z].
+	# Each is hidden + collision-disabled when ITS objective is completed (Main's
+	# EXIT_OBJECTIVE map); escaping = walking out through an open one.
+	for door_def: Array in [
+			["front_door", 0.5, 1.2, 6.0],
+			["garage_door", 6.5, 1.4, 6.0],
+			["back_door", -0.5, 1.4, -6.0]]:
 		var door := StaticBody3D.new()
 		door.add_to_group(door_def[0])
-		door.position = Vector3(door_def[1] * S, 1.0, 6.0 * S)
+		door.position = Vector3(door_def[1] * S, 1.0, door_def[3] * S)
 		var door_shape := CollisionShape3D.new()
 		var door_box := BoxShape3D.new()
 		door_box.size = Vector3(door_def[2] * S, 2.0, 0.25)

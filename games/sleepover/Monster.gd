@@ -22,6 +22,8 @@ signal lunged_hit(target: Node3D)
 @export var patrol_floor_dwell: float = 20.0 ## max secs on one floor in PATROL before routing to another
 @export var wake_delay: float = 40.0       ## secs asleep at round start
 @export var hearing_radius: float = 14.0   ## pings farther than this don't exist
+@export var solo_hearing_mult: float = 0.6 ## solo test: hearing x0.6 (−40%) so it doesn't zero in
+@export var solo_chase_memory: float = 8.0 ## solo test: give up after 8s instead of 12
 @export var investigate_time: float = 8.0  ## secs spent searching a ping site
 @export var pings_to_chase: int = 3        ## this many pings within ping_window = chase
 @export var ping_window: float = 10.0
@@ -51,6 +53,8 @@ var _wake_timer: float = 0.0
 var _patrol_i: int = 0
 var _floor_dwell: float = 0.0              ## secs on the current floor while patrolling
 var _patrol_floor: int = -1               ## floor we've been dwelling on
+var _base_hearing: float = 14.0           ## export defaults captured for the solo modifier
+var _base_chase_memory: float = 12.0
 var _last_known: Vector3                   ## the only "player position" it has
 var _chase_timer: float = 0.0
 var _dwell: float = 0.0
@@ -89,6 +93,8 @@ func _ready() -> void:
 	_build_audio()
 	_spawn = global_transform
 	_wake_timer = wake_delay
+	_base_hearing = hearing_radius
+	_base_chase_memory = chase_memory
 	NoiseBus.noise_emitted.connect(_on_noise)
 
 func _build_body() -> void:
@@ -175,6 +181,12 @@ func set_wake(seconds: float) -> void:
 
 func set_spawn_point(world_pos: Vector3) -> void:
 	_spawn.origin = world_pos  # host sets the LIGHTS-OUT spawn; respawn() uses it
+
+## Solo-testing modifier (FEEL.md): a lone tester shouldn't get zeroed in on.
+## Applied at round start from the base @export values so it's reversible.
+func set_solo(is_solo: bool) -> void:
+	hearing_radius = _base_hearing * (solo_hearing_mult if is_solo else 1.0)
+	chase_memory = solo_chase_memory if is_solo else _base_chase_memory
 
 func respawn() -> void:
 	global_transform = _spawn

@@ -165,6 +165,21 @@ func prompt(player_pos: Vector3) -> String:
 				return "E: GRAB GLASSES"
 	return ""
 
+## True when an E press here would GRAB a clue/item (reach into the bag) — the
+## cases that go through the slow, loud unzip channel rather than firing instantly.
+## Panels, the dog hand-off, and hold-actions are NOT grabs.
+func grab_available(player_pos: Vector3) -> bool:
+	if done:
+		return false
+	match def.kind:
+		ObjectiveDef.Kind.LANDLINE, ObjectiveDef.Kind.GARAGE_CODE, ObjectiveDef.Kind.BREAKER:
+			return not _revealed and _clue != null and _near(_clue.position, player_pos)
+		ObjectiveDef.Kind.DOG:
+			return not _has_snack and _clue != null and _near(_clue.position, player_pos)
+		ObjectiveDef.Kind.GLASSES:
+			return blurred_is_me and _clue != null and _near(_clue.position, player_pos)
+	return false
+
 ## Returns true if this objective grabbed the E press (so Main stops looking).
 func try_interact(player_pos: Vector3) -> bool:
 	if done:

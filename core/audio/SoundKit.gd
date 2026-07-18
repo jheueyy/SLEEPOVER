@@ -10,6 +10,7 @@ extends Object
 ##   sting     — dissonant chord when a chase begins
 ##   screech   — lunge windup
 ##   zipper    — rescue / unzip
+##   breath    — heavy scared breathing heard from inside the bag (loop)
 ##   click     — rotary phone dial
 
 const RATE := 22050
@@ -44,6 +45,7 @@ static func _generate(kind: String) -> AudioStreamWAV:
 		"bark": return _to_wav(_bark(), false)
 		"clatter": return _to_wav(_clatter(), false)
 		"shush": return _to_wav(_shush(), false)
+		"breath": return _to_wav(_breath(), true)
 		_: return _to_wav(_click(), false)
 
 # ── Generators (all return mono float samples in [-1, 1]) ─────────────────
@@ -167,6 +169,25 @@ static func _shush() -> PackedFloat32Array:
 		var white := randf_range(-1.0, 1.0)
 		prev = lerpf(prev, white, 0.35)     # crude low-pass → airy "shh", not hiss
 		out[i] = (white - prev) * env * 0.5  # high-passed noise = breathy consonant
+	return out
+
+static func _breath() -> PackedFloat32Array:
+	# Heavy, scared breathing heard from inside the bag: a slow in-out cycle of
+	# band-passed noise (~4s loop). Two breaths per loop — inhale swell, exhale
+	# fall — with a crude low-pass so it's airy, not hissy.
+	var n := RATE * 4
+	var out := PackedFloat32Array()
+	out.resize(n)
+	var prev := 0.0
+	for i in n:
+		var t := float(i) / RATE
+		var cyc := fmod(t, 2.0) / 2.0            # 0..1 per 2s breath
+		# Inhale (rising) for the first 45%, exhale (falling) after — never silent.
+		var env := (cyc / 0.45) if cyc < 0.45 else (1.0 - (cyc - 0.45) / 0.55)
+		env = 0.15 + 0.85 * clampf(env, 0.0, 1.0)
+		var white := randf_range(-1.0, 1.0)
+		prev = lerpf(prev, white, 0.18)          # low-pass → breathy, not sharp
+		out[i] = prev * env * 0.4
 	return out
 
 static func _clatter() -> PackedFloat32Array:

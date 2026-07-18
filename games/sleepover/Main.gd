@@ -29,6 +29,9 @@ enum Phase { LOBBY, LIGHTS_OUT, ROUND, RESULTS }
 @export var rescue_time: float = 5.0
 @export var rescue_zipper_at: float = 3.0   ## the loud zipper ping mid-rescue
 @export var zipper_loudness: float = 0.9
+@export var unzip_secs: float = 1.2         ## hold-E time to unzip & grab a clue/item
+@export var unzip_chase_penalty: float = 1.0 ## +time while the monster is chasing (panic fumble)
+@export var unzip_loudness: float = 0.85     ## the loud RRRIP the unzip broadcasts
 
 var _player: SleepingBagPlayer
 var _monster: NoiseMonster
@@ -40,6 +43,8 @@ var _yaw: float = 0.0
 var _pitch: float = 0.0
 var _lookback: float = 0.0
 var _cocoon_cam: float = 0.0   ## 0 = normal chase cam, 1 = snapped inside the bag
+var _porch_light: OmniLight3D  ## flickers during the 10s intro, then dies
+var _porch_dying: bool = false
 var _aim: MeshInstance3D
 
 # HUD
@@ -53,10 +58,9 @@ var _debug_label: Label
 var _pips: Array[ColorRect] = []
 var _cocoon_overlay: Control
 var _cocoon_text: Label
-var _stinger_face: Control
 var _shush_ui: AudioStreamPlayer
-var _stinger_t: float = 0.0        ## catch-stinger countdown (>0 = playing)
-const STINGER_DUR := 1.8
+var _breathing: AudioStreamPlayer   ## heavy in-bag breathing loop (cocooned)
+const INBAG_BUS := "InBag"
 var _results_overlay: Control
 var _results_label: Label
 var _phone_panel: PanelContainer
@@ -69,12 +73,29 @@ var _round_elapsed: float = 0.0
 var _objectives: Array[Objective] = []   ## the 5 active this round
 var _done_ids: Array[String] = []        ## objective ids completed (need 3)
 var _escape_armed: bool = false
+# Which objective unlocks which exit. The escape PHASE arms at 3-of-5, but a
+# given door only opens once ITS objective is completed. With only two support
+# objectives (deadbolt, glasses), any 3 completions guarantee ≥1 door opens, so
+# every 5-of-6 draw is winnable. Exit names must match HouseSuburban.EXITS.
+const EXIT_OBJECTIVE := {
+	"FRONT DOOR": "landline",
+	"BACK DOOR": "dog",           # the dog has the keys to the deadbolted back door
+	"GARAGE": "garage_code",
+	"BASEMENT WINDOW": "breaker", # the breaker powers the basement egress
+}
 var _blurred_pid: int = 0                 ## glasses: whose screen is blurred (0 = nobody)
 var _rescue_target: Node3D = null
 var _rescue_t: float = 0.0
 var _rescue_zipped: bool = false
 var _debug_visible: bool = false
 var _monster_fx_state: int = -1
+# Unzip channel: grabbing a clue/item means unzipping the bag — a hold-E channel
+# that takes time and broadcasts a loud RRRIP. Panic-fumbles (+time) in a chase.
+var _unzip_target: Objective = null
+var _unzip_t: float = 0.0
+var _unzip_dur: float = 0.0
+var _unzip_panic: bool = false
+const PROMPT_POS := Vector2(-260, -110)
 
 # Glasses blur (post-process on the one blurred player)
 var _blur_overlay: ColorRect
@@ -123,33 +144,27 @@ func _ready() -> void:
 # hide/ping logic without a second player or the stochastic live chase.
 func _run_selftest() -> void:
 	var pass_all := true
-	# 1. OBJECTIVES + ESCAPE. 5 spawn; completing 3 arms escape + unlocks doors;
-	#    walking into TWO different exits both end the round in ESCAPE.
+	# 1. OBJECTIVES + ESCAPE. 5 spawn; every door starts locked; completing 3 arms
+	#    the phase, and a door only opens once ITS objective is done. We escape
+	#    through the door that the completed objective actually unlocked.
 	_host_start_round()
 	_apply_phase(Phase.ROUND, {})
 	var ok_count := _objectives.size() == 5
-	var front_locked := _exit_door_locked("front_door")
-	# Force 3 objectives done (whichever 5 were drawn).
-	for i in 3:
-		_authoritative_complete(_objectives[i].def.id)
-	var ok_armed := _escape_armed and not _exit_door_locked("front_door")
-	# Exit A: front door.
-	var exits := HouseSuburban.exits()
-	_player.global_position = exits[0]["at"]
-	_net_report_escape(1)
-	var ok_exit_a := phase == Phase.RESULTS and _results_label.text.contains("ESCAPE")
-	# Exit B: garage (fresh armed round).
+	var all_locked := _exit_door_locked("front_door") and _exit_door_locked("back_door") \
+		and _exit_door_locked("garage_door")
+	# Exit A: complete a drawn door-objective (+ fill to 3), escape through it.
+	var exit_a := _selftest_arm_via_door()
+	var ok_armed := _escape_armed and exit_a != "" and _exit_is_open(exit_a)
+	var ok_exit_a := _selftest_escape_via(exit_a)
+	# Exit B: a fresh armed round through another opened door.
 	_apply_phase(Phase.LOBBY, {})
 	_host_start_round()
 	_apply_phase(Phase.ROUND, {})
-	for i in 3:
-		_authoritative_complete(_objectives[i].def.id)
-	_player.global_position = exits[1]["at"]
-	_net_report_escape(1)
-	var ok_exit_b := phase == Phase.RESULTS and _results_label.text.contains("ESCAPE")
-	print("[SELFTEST] objectives: 5spawn=%s front-locked=%s 3done-arms=%s exitA=%s exitB=%s" % [
-		ok_count, front_locked, ok_armed, ok_exit_a, ok_exit_b])
-	pass_all = pass_all and ok_count and front_locked and ok_armed and ok_exit_a and ok_exit_b
+	var exit_b := _selftest_arm_via_door()
+	var ok_exit_b := _selftest_escape_via(exit_b)
+	print("[SELFTEST] objectives: 5spawn=%s all-locked=%s 3done-arms(%s)=%s exitA(%s)=%s exitB(%s)=%s" % [
+		ok_count, all_locked, exit_a, ok_armed, exit_a, ok_exit_a, exit_b, ok_exit_b])
+	pass_all = pass_all and ok_count and all_locked and ok_armed and ok_exit_a and ok_exit_b
 
 	# 2. SUNRISE. Round with the timer already run out and a survivor.
 	_apply_phase(Phase.LOBBY, {})
@@ -286,6 +301,31 @@ func _run_selftest() -> void:
 	print("[SELFTEST] RESULT: %s" % ("ALL PASS" if pass_all else "FAIL"))
 	get_tree().quit(0 if pass_all else 1)
 
+## Selftest helper: complete one drawn door-objective, then fill to 3 total, and
+## return the exit that opened (a door-objective is always in a 5-of-6 draw).
+func _selftest_arm_via_door() -> String:
+	var opened := ""
+	for o: Objective in _objectives:
+		if _exit_for_objective(o.def.id) != "":
+			_authoritative_complete(o.def.id)
+			opened = _exit_for_objective(o.def.id)
+			break
+	for o: Objective in _objectives:
+		if _done_ids.size() >= 3:
+			break
+		if not _done_ids.has(o.def.id):
+			_authoritative_complete(o.def.id)
+	return opened
+
+## Selftest helper: teleport to `exit_name`'s zone and trigger the escape check.
+func _selftest_escape_via(exit_name: String) -> bool:
+	for e: Dictionary in HouseSuburban.exits():
+		if e["name"] == exit_name:
+			_player.global_position = e["at"]
+			break
+	_net_report_escape(1)
+	return phase == Phase.RESULTS and _results_label.text.contains("ESCAPE")
+
 # ── World ──────────────────────────────────────────────────────────────────
 
 func _build_environment() -> void:
@@ -304,6 +344,15 @@ func _build_environment() -> void:
 	sun.light_energy = 1.1
 	sun.shadow_enabled = true
 	add_child(sun)
+
+	# Porch light just outside the front door — flickers through the 10s intro,
+	# then dies as LIGHTS OUT begins (the round's opening beat).
+	_porch_light = OmniLight3D.new()
+	_porch_light.position = Vector3(0.5 * HouseSuburban.S, 2.2, 6.0 * HouseSuburban.S + 0.6)
+	_porch_light.omni_range = 6.0
+	_porch_light.light_color = Color(1.0, 0.86, 0.6)
+	_porch_light.light_energy = 0.0
+	add_child(_porch_light)
 
 func _build_level() -> void:
 	var nav_region := NavigationRegion3D.new()
@@ -416,7 +465,7 @@ func _build_hud() -> void:
 
 	_prompt_label = Label.new()
 	_prompt_label.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	_prompt_label.position = Vector2(-260, -110)
+	_prompt_label.position = PROMPT_POS
 	_prompt_label.custom_minimum_size = Vector2(520, 30)
 	_prompt_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_prompt_label.add_theme_font_size_override("font_size", 22)
@@ -484,42 +533,27 @@ void fragment() {
 	_cocoon_overlay.visible = false
 	layer.add_child(_cocoon_overlay)
 	_cocoon_text = Label.new()
-	_cocoon_text.text = "COCOONED\n\nYou are zipped in tight.\nA friend must hold E next to you for 5 seconds."
+	_cocoon_text.text = "COCOONED\n\nYou are zipped in tight.\nA friend must hold E next to you for 5 seconds.\n\n(hold Q to look back over your shoulder)"
 	_cocoon_text.set_anchors_preset(Control.PRESET_CENTER)
-	_cocoon_text.position = Vector2(-260, -60)
-	_cocoon_text.custom_minimum_size = Vector2(520, 120)
+	_cocoon_text.position = Vector2(-260, -80)
+	_cocoon_text.custom_minimum_size = Vector2(520, 160)
 	_cocoon_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_cocoon_text.add_theme_font_size_override("font_size", 24)
 	_cocoon_overlay.add_child(_cocoon_text)
 
-	# Catch stinger: the Housesitter's pale face looms in as it tucks you in.
-	# A rounded mask + two dark eye-pits, centred, scaled up over ~1.8s. Sits on
-	# its own layer ABOVE the fabric dark so it reads before the iris closes.
-	_stinger_face = Control.new()
-	_stinger_face.set_anchors_preset(Control.PRESET_CENTER)
-	_stinger_face.custom_minimum_size = Vector2(240, 320)
-	_stinger_face.size = Vector2(240, 320)
-	_stinger_face.position = Vector2(-120, -160)
-	_stinger_face.pivot_offset = Vector2(120, 160)
-	_stinger_face.visible = false
-	_cocoon_overlay.add_child(_stinger_face)
-	var mask := Panel.new()
-	var mask_style := StyleBoxFlat.new()
-	mask_style.bg_color = Color(0.90, 0.86, 0.72)
-	mask_style.set_corner_radius_all(110)
-	mask.add_theme_stylebox_override("panel", mask_style)
-	mask.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_stinger_face.add_child(mask)
-	for ex: float in [-1.0, 1.0]:
-		var pit := ColorRect.new()
-		pit.color = Color(0.03, 0.03, 0.05)
-		pit.size = Vector2(46, 64)
-		pit.position = Vector2(120 + ex * 52 - 23, 120)
-		_stinger_face.add_child(pit)
-
+	# In-bag audio bus: a low-pass filter muffles everything routed here so it
+	# reads as "heard through fabric". The heavy breathing loop lives on it, and
+	# proximity voice should route here too once VOIP exists (Task 2 low-pass).
+	_ensure_inbag_bus()
 	_shush_ui = AudioStreamPlayer.new()
 	_shush_ui.stream = SoundKit.get_stream("shush")
+	_shush_ui.bus = INBAG_BUS
 	add_child(_shush_ui)
+	_breathing = AudioStreamPlayer.new()
+	_breathing.stream = SoundKit.get_stream("breath")
+	_breathing.bus = INBAG_BUS
+	_breathing.volume_db = -3.0
+	add_child(_breathing)
 
 	# Results screen.
 	_results_overlay = ColorRect.new()
@@ -569,7 +603,7 @@ func _enter_lobby() -> void:
 	_cocoon_overlay.visible = false
 	_phone_panel.visible = false
 	_blur_overlay.visible = false
-	_reset_stinger()
+	_reset_cocoon_ui()
 	_clear_objectives()
 	_set_exits_locked(true)
 	_player.respawn()
@@ -706,8 +740,13 @@ func _apply_phase(p: Phase, data: Dictionary) -> void:
 				_monster_target = data["monster_spawn"]
 				_has_monster_target = true
 			_monster.respawn()
+			_monster.set_solo(_lobby_size() == 1)  # solo-testing balance modifier
 			_monster.set_wake(lights_out_duration)
 			_cocoon_overlay.visible = false
+			_reset_cocoon_ui()
+			_porch_dying = true
+			if _porch_light:
+				_porch_light.light_energy = 1.6  # on, about to start failing
 			_show_toast("LIGHTS OUT.", 3.0)
 			print("[NETTEST] phase=LIGHTS_OUT objs=%d blurred=%d spawn_floor=%d" % [
 				(data.get("objs", []) as Array).size(), data.get("blurred", 0),
@@ -715,8 +754,13 @@ func _apply_phase(p: Phase, data: Dictionary) -> void:
 		Phase.ROUND:
 			_phase_timer = round_duration
 			_round_elapsed = 0.0
+			_porch_dying = false
+			if _porch_light:
+				_porch_light.light_energy = 0.0  # the porch light finally dies — dark now
 			print("[NETTEST] phase=ROUND")
 		Phase.RESULTS:
+			if _breathing and _breathing.playing:
+				_breathing.stop()
 			_show_results(data)
 			print("[NETTEST] phase=RESULTS outcome=%s" % data.get("outcome"))
 
@@ -760,6 +804,7 @@ func _show_results(data: Dictionary) -> void:
 # ── Objectives (data-driven; complete any 3 to arm escape) ─────────────────
 
 func _setup_objectives(data: Dictionary) -> void:
+	_unzip_target = null  # old objectives are about to be freed
 	_clear_objectives()
 	_done_ids.clear()
 	_escape_armed = false
@@ -855,15 +900,54 @@ func _mark_objective_done(id: String) -> void:
 			o.force_done()
 			if o.blurred_is_me:
 				_blur_overlay.visible = false  # got the glasses
-	_show_toast("Task done (%d/3).  %s" % [mini(_done_ids.size(), 3), id], 3.0)
-	print("[NETTEST] objective done: %s (%d)" % [id, _done_ids.size()])
+	_refresh_exit_doors()  # this objective may have opened a specific door
+	var opened := _exit_for_objective(id)
+	if opened != "":
+		_show_toast("%s is UNLOCKED.  (%d/3 tasks)" % [opened, mini(_done_ids.size(), 3)], 4.0)
+	else:
+		_show_toast("Task done (%d/3).  %s" % [mini(_done_ids.size(), 3), id], 3.0)
+	print("[NETTEST] objective done: %s (%d) opened=%s" % [id, _done_ids.size(), opened])
 
 func _arm_escape() -> void:
 	_escape_armed = true
-	_set_exits_locked(false)
-	_show_toast("3 TASKS DONE. The exits are open — GET OUT.", 6.0)
-	print("[NETTEST] escape armed")
+	_refresh_exit_doors()
+	var open_names := _open_exit_names()
+	var which := ", ".join(open_names) if not open_names.is_empty() else "no doors yet — finish a door task"
+	_show_toast("3 TASKS DONE. Escape is on — GET OUT.  OPEN: %s" % which, 6.0)
+	print("[NETTEST] escape armed open=%s" % which)
 
+## The exit name a given objective unlocks ("" if it's a support objective).
+func _exit_for_objective(id: String) -> String:
+	for name: String in EXIT_OBJECTIVE:
+		if EXIT_OBJECTIVE[name] == id:
+			return name
+	return ""
+
+## An exit is open when its required objective is completed.
+func _exit_is_open(exit_name: String) -> bool:
+	var need: String = EXIT_OBJECTIVE.get(exit_name, "")
+	return need != "" and _done_ids.has(need)
+
+func _open_exit_names() -> Array[String]:
+	var out: Array[String] = []
+	for e: Dictionary in HouseSuburban.exits():
+		if _exit_is_open(e["name"]):
+			out.append(e["name"])
+	return out
+
+## Show/hide each physical door blocker to match its exit's open state.
+func _refresh_exit_doors() -> void:
+	for e: Dictionary in HouseSuburban.exits():
+		if e["door"] == "":
+			continue
+		var open := _exit_is_open(e["name"])
+		for node: Node in get_tree().get_nodes_in_group(e["door"]):
+			var d := node as StaticBody3D
+			d.visible = not open
+			(d.get_child(0) as CollisionShape3D).disabled = open
+
+## Reset helper: force every physical door blocker to a state (used on lobby /
+## round setup to hard-lock before any objective is done).
 func _set_exits_locked(locked: bool) -> void:
 	for e: Dictionary in HouseSuburban.exits():
 		if e["door"] == "":
@@ -878,11 +962,14 @@ func _exit_door_locked(group: String) -> bool:
 	return nodes.size() > 0 and (nodes[0] as StaticBody3D).visible
 
 func _player_at_exit() -> String:
-	# Which unlocked exit (if any) the local player is standing in.
+	# Which OPEN exit (if any) the local player is standing in. Requires the
+	# escape phase to be armed AND that specific door's objective to be done.
 	if not _escape_armed:
 		return ""
 	var p := _player.global_position
 	for e: Dictionary in HouseSuburban.exits():
+		if not _exit_is_open(e["name"]):
+			continue
 		var at: Vector3 = e["at"]
 		var half: Vector2 = e["half"]
 		if absf(p.x - at.x) < half.x and absf(p.z - at.z) < half.y and absf(p.y - at.y) < 2.5:
@@ -915,15 +1002,19 @@ func _net_cocoon() -> void:
 func _cocoon_local() -> void:
 	if _player.state == SleepingBagPlayer.State.COCOONED:
 		return
+	# INSTANT hard snap: no cinematic, no AnimationPlayer. The chase cam is killed
+	# and the first-person in-bag view + fabric-dark overlay come up on the same
+	# frame (_update_camera snaps _cocoon_cam to 1 while COCOONED). WASD is locked
+	# by the player's COCOONED state; the wiggling body stays visible to others.
 	_player.cocoon()
+	_unzip_target = null  # a caught player can't be mid-unzip
+	_cocoon_cam = 1.0
 	_cocoon_overlay.visible = true
-	# Kick off the first-person "tucked in" stinger: face looms + shush + the
-	# fabric irises closed, then hands off to the cocoon-wait overlay.
-	_stinger_t = STINGER_DUR
-	_stinger_face.visible = true
-	_stinger_face.scale = Vector2(0.4, 0.4)
-	_cocoon_text.visible = false
+	(_cocoon_overlay as ColorRect).color.a = 0.94
+	_cocoon_text.visible = true
 	_shush_ui.play()
+	if not _breathing.playing:
+		_breathing.play()
 	print("[NETTEST] cocooned (me)")
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -935,7 +1026,7 @@ func _apply_rescue(victim_pid: int) -> void:
 	if victim_pid == my_id:
 		_player.rescue()
 		_cocoon_overlay.visible = false
-		_reset_stinger()
+		_reset_cocoon_ui()
 		print("[NETTEST] rescued (me)")
 	elif _remote_bags.has(victim_pid):
 		_remote_bags[victim_pid].set_meta("cocooned", false)
@@ -1081,10 +1172,43 @@ func _try_interact_press() -> void:
 		return
 	if _rescue_target != null:
 		return  # rescue is the hold-E path
+	if _unzip_target != null:
+		return  # already unzipping
 	var p := _player.global_position
+	# Grabbing a clue/item means unzipping the bag: a slow, loud hold-E channel.
+	for o: Objective in _objectives:
+		if o.grab_available(p):
+			_begin_unzip(o)
+			return
+	# Everything else (dial panels, dog hand-off, deadbolt) fires on the press.
 	for o: Objective in _objectives:
 		if o.try_interact(p):
 			return
+
+func _begin_unzip(o: Objective) -> void:
+	_unzip_target = o
+	_unzip_t = 0.0
+	_unzip_panic = _monster_fx_state >= NoiseMonster.State.CHASE
+	_unzip_dur = unzip_secs + (unzip_chase_penalty if _unzip_panic else 0.0)
+	# The zip breaking the seal is LOUD — a ping every hunter in earshot gets.
+	NoiseBus.emit_noise(_player.global_position, unzip_loudness)
+	SoundKit.play_at(self, _player.global_position, "zipper")
+
+func _update_unzip(delta: float) -> void:
+	if _unzip_target == null:
+		return
+	var p := _player.global_position
+	# Cancel on release, cocoon, or moving off the clue; the grab is not committed
+	# until the channel completes (so a fumbled unzip costs you the time + noise).
+	if not Input.is_key_pressed(KEY_E) \
+			or _player.state == SleepingBagPlayer.State.COCOONED \
+			or not _unzip_target.grab_available(p):
+		_unzip_target = null
+		return
+	_unzip_t += delta
+	if _unzip_t >= _unzip_dur:
+		_unzip_target.try_interact(p)  # zipped open — grab it now
+		_unzip_target = null
 
 # ── Frame loop ─────────────────────────────────────────────────────────────
 
@@ -1102,23 +1226,23 @@ func _process(delta: float) -> void:
 		_pips[i].color = PIP_ON if _player.stamina >= float(i + 1) else PIP_OFF
 
 	_update_eyes(delta)
-	_update_stinger(delta)
 
 	_prompt_label.text = ""
 	if phase == Phase.ROUND:
 		_update_rescue(delta)
+		_update_unzip(delta)
 		_update_objectives(delta)
 		_update_prompts()
 		_update_tracker()
-	else:
-		_tracker_label.text = ""
-		# Escape: through any unlocked exit, out into the night.
+		# Escape: walk into an OPEN exit (its objective done) once armed → out.
 		if _escape_armed and _player_at_exit() != "" \
 				and _player.state != SleepingBagPlayer.State.COCOONED:
 			if _is_authority():
 				_net_report_escape(_my_id())
 			else:
 				_net_report_escape.rpc_id(1, _my_id())
+	else:
+		_tracker_label.text = ""
 
 	_update_phase(delta)
 	_update_audio(delta)
@@ -1148,6 +1272,18 @@ func _bodies_near(pos: Vector3, r: float) -> int:
 	return n
 
 func _update_prompts() -> void:
+	# Unzip channel takes priority: show progress, and shake the text (NOT the
+	# camera) while panic-fumbling in a chase to sell the shaky hands.
+	if _unzip_target != null:
+		var pct := int(clampf(_unzip_t / _unzip_dur, 0.0, 1.0) * 100.0)
+		if _unzip_panic:
+			_prompt_label.text = "UNZIPPING… %d%%   — hands shaking!" % pct
+			_prompt_label.position = PROMPT_POS + Vector2(randf_range(-4, 4), randf_range(-3, 3))
+		else:
+			_prompt_label.text = "UNZIPPING… %d%%" % pct
+			_prompt_label.position = PROMPT_POS
+		return
+	_prompt_label.position = PROMPT_POS
 	if _rescue_target != null:
 		if not Input.is_key_pressed(KEY_E):
 			_prompt_label.text = "HOLD E TO RESCUE"
@@ -1156,7 +1292,8 @@ func _update_prompts() -> void:
 	for o: Objective in _objectives:
 		var pr := o.prompt(p)
 		if pr != "":
-			_prompt_label.text = pr
+			# Hint that grabs cost an unzip, so the loud channel isn't a surprise.
+			_prompt_label.text = pr + ("  (hold E: unzip)" if o.grab_available(p) else "")
 			return
 
 func _update_tracker() -> void:
@@ -1169,9 +1306,16 @@ func _update_tracker() -> void:
 			Objective.Tracker.DONE: box = "x"
 			Objective.Tracker.IN_PROGRESS: box = "~"
 		var line := "[%s] %s" % [box, o.def.display_name]
+		# Name the door this task opens, so players know what each objective buys.
+		var door := _exit_for_objective(o.def.id)
+		if door != "":
+			line += "  (%s)" % door
 		if o.is_revealed() and o.tracker_state() != Objective.Tracker.DONE:
 			line += "  —  " + o.tracker_detail()
 		text += line + "\n"
+	if _escape_armed:
+		var open_names := _open_exit_names()
+		text += "\nOPEN: %s" % (", ".join(open_names) if not open_names.is_empty() else "finish a door task!")
 	_tracker_label.text = text
 
 func _update_phase(delta: float) -> void:
@@ -1180,6 +1324,13 @@ func _update_phase(delta: float) -> void:
 		Phase.LIGHTS_OUT:
 			_phase_timer -= delta
 			_clock_label.text = "dark in %d..." % int(ceil(maxf(_phase_timer, 0.0)))
+			if _porch_light and _porch_dying:
+				# Failing porch light: base glow dimming toward the end of the intro,
+				# with erratic flicker dropouts that get worse as LIGHTS OUT nears.
+				var frac := clampf(_phase_timer / lights_out_duration, 0.0, 1.0)  # 1→0
+				var base := lerpf(0.4, 1.6, frac)
+				var flick := 1.0 if randf() > (0.5 - 0.35 * (1.0 - frac)) else randf_range(0.0, 0.3)
+				_porch_light.light_energy = base * flick
 			if is_authority and _phase_timer <= 0.0:
 				_apply_phase(Phase.ROUND, {})
 				if _net_connected():
@@ -1254,34 +1405,45 @@ func _alert_over(mood: int) -> bool:
 	# ALERT (scared-wide) overrides the calm moods, not the committed ones.
 	return mood == BagEyes.Mood.IDLE or mood == BagEyes.Mood.DROOP
 
-func _update_stinger(delta: float) -> void:
-	if _stinger_t <= 0.0:
+func _ensure_inbag_bus() -> void:
+	# A muffled bus for everything you hear while zipped in: heavy breathing now,
+	# proximity voice later. A low-pass filter kills the highs so it sounds like
+	# it's coming through fabric.
+	if AudioServer.get_bus_index(INBAG_BUS) != -1:
 		return
-	_stinger_t -= delta
-	var p := clampf(1.0 - _stinger_t / STINGER_DUR, 0.0, 1.0)
-	# Face looms in (scales up), then fades as the fabric dark irises closed.
-	var s := lerpf(0.4, 1.55, minf(p / 0.65, 1.0))
-	_stinger_face.scale = Vector2(s, s)
-	_stinger_face.modulate.a = 1.0 - clampf((p - 0.7) / 0.3, 0.0, 1.0)
-	(_cocoon_overlay as ColorRect).color.a = lerpf(0.28, 0.94, p * p)
-	if _stinger_t <= 0.0:  # done — hand off to the cocoon-wait overlay
-		_stinger_face.visible = false
-		_cocoon_text.visible = true
-		(_cocoon_overlay as ColorRect).color.a = 0.94
+	var idx := AudioServer.get_bus_count()
+	AudioServer.add_bus(idx)
+	AudioServer.set_bus_name(idx, INBAG_BUS)
+	AudioServer.set_bus_send(idx, "Master")
+	var lp := AudioEffectLowPassFilter.new()
+	lp.cutoff_hz = 600.0  # muffled: only the low breathy body of the sound survives
+	AudioServer.add_bus_effect(idx, lp)
 
-func _reset_stinger() -> void:
-	_stinger_t = 0.0
-	_stinger_face.visible = false
+func _reset_cocoon_ui() -> void:
+	# Rescue / lobby reset: drop the overlay, stop the in-bag breathing, snap the
+	# chase cam back out of the bag.
 	_cocoon_text.visible = true
 	(_cocoon_overlay as ColorRect).color.a = 0.94
+	_cocoon_cam = 0.0
+	if _breathing and _breathing.playing:
+		_breathing.stop()
 
 func _update_camera(delta: float) -> void:
-	var lookback_target := 1.0 if Input.is_key_pressed(KEY_Q) else 0.0
-	_lookback = move_toward(_lookback, lookback_target, delta * 6.0)
-	# Cocoon snap: pull the camera INSIDE the bag so the dark overlay reads as
-	# fabric filling the screen — claustrophobia as punishment.
 	var cocooned := _player.state == SleepingBagPlayer.State.COCOONED
-	_cocoon_cam = move_toward(_cocoon_cam, 1.0 if cocooned else 0.0, delta * 4.0)
+	# Look-back over the shoulder (hold Q). In the bag it's INSTANT (snap 180°,
+	# release snaps straight back); out of the bag it eases for a smoother glance.
+	var lookback_target := 1.0 if Input.is_key_pressed(KEY_Q) else 0.0
+	if cocooned:
+		_lookback = lookback_target
+	else:
+		_lookback = move_toward(_lookback, lookback_target, delta * 6.0)
+	# Cocoon snap: the chase cam is killed INSTANTLY (no ease) and the camera is
+	# pulled inside the bag so the fabric-dark overlay fills the screen. Snapped in
+	# _cocoon_local; here we just hold it and ease back OUT on rescue.
+	if cocooned:
+		_cocoon_cam = 1.0
+	else:
+		_cocoon_cam = move_toward(_cocoon_cam, 0.0, delta * 4.0)
 	_spring.spring_length = lerpf(cam_distance, 0.12, _cocoon_cam)
 	var h := lerpf(cam_height, 0.35, _cocoon_cam)
 	var target := _player.global_position + Vector3.UP * h
@@ -1294,6 +1456,9 @@ func _update_camera(delta: float) -> void:
 	_camera.fov = lerpf(_camera.fov, lerpf(fov_base, fov_chase, panic), 8.0 * delta)
 
 # ── Networking ─────────────────────────────────────────────────────────────
+
+func _lobby_size() -> int:
+	return (1 + multiplayer.get_peers().size()) if _net_connected() else 1
 
 func _net_connected() -> bool:
 	return multiplayer.has_multiplayer_peer() \
