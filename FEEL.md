@@ -282,6 +282,33 @@ tells; get in your bag) is *inferable* from the fragments + behaviour alone.
   Housesitter `withdraw()`s; **OUTRO ALL-TUCKED-IN** = the house goes quiet, lullaby
   fades. `Main._start_outro/_update_outro`, overlaid on the results.
 
+## Proximity voice (`core/audio/VoiceManager.gd`, autoload)
+Capture is the **Steam voice API** (compression is Steam's; uses the **system
+default** input device — the API has no per-device select, so settings has no
+misleading dropdown). Push-to-talk **V** by default; "open mic" + "voice enabled"
+toggles in settings. Packets ride the same RPC stack as gameplay
+(`any_peer, unreliable`); **sender identity comes from the transport**, never the
+packet. No Steam (solo / `--enet-*` loopback): `test_tone_mode` streams synthetic
+s16 tone packets down the identical path, so transport is provable headlessly.
+
+| Constant | Default | What it does |
+|---|---|---|
+| `Main.voice_range` | 14.0 | AudioStreamPlayer3D falloff — voice is room-scale-ish, like the hearing radius |
+| `VoiceManager.PTT_KEY` | V | push-to-talk |
+| `VoiceManager.SPEAK_HOLD` | 0.4 | secs the 🗣 indicator lingers after the last packet |
+
+- Each peer's voice plays from an `AudioStreamPlayer3D` **parented to their ghost
+  bag** (mouth height 0.7) — proximity attenuation via the 3D mixer, for free.
+- **Cocoon muffle**: a cocooned speaker's player is routed to the `InBag` 600 Hz
+  low-pass bus — voice through fabric (flag-edge detected in `_net_bag_state`).
+- HUD: "V talk" in the controls line + a green "🗣 name, name" row while peers speak.
+- **Design law: the monster NEVER hears voice.** Talking is the co-op glue and must
+  always feel safe; hops/zippers are the noise economy, not your friends.
+- Verified: selftest group `voice` (rx counting, speak-on/off, unregister-clean,
+  2.4k frames pushed headless) + loopback both directions (181 pkts / 427k frames
+  each way, zero errors). Real audio/positioning/muffle needs the two-Steam-client
+  ear check (FRIEND_SETUP.md).
+
 ## Floor distribution (pull players + monster across all 3 floors)
 Everything used to cluster on the ground floor. Now:
 - **Objective clues** have per-floor pools (Landline/Garage/Breaker each carry

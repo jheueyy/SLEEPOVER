@@ -196,14 +196,19 @@ func _build_settings() -> Control:
 	sens.custom_minimum_size = Vector2(320, 0)
 	box.add_child(sens)
 
-	# Mic device — real device list, selection is a stub for now.
-	box.add_child(_label("Microphone device  (stub)"))
-	var mic := OptionButton.new()
-	for dev: String in AudioServer.get_input_device_list():
-		mic.add_item(dev)
-	if mic.item_count == 0:
-		mic.add_item("Default")
-	box.add_child(mic)
+	# Voice chat — Steam voice API captures from the SYSTEM DEFAULT input device
+	# (the Steam API has no per-device selection), so no misleading dropdown.
+	box.add_child(_label("Voice chat  (Steam mic — system default device)"))
+	var voice_on := CheckButton.new()
+	voice_on.text = "Voice chat enabled"
+	voice_on.button_pressed = VoiceManager.enabled
+	voice_on.toggled.connect(func(v: bool) -> void: VoiceManager.enabled = v)
+	box.add_child(voice_on)
+	var open_mic := CheckButton.new()
+	open_mic.text = "Open mic  (off = push-to-talk V)"
+	open_mic.button_pressed = VoiceManager.open_mic
+	open_mic.toggled.connect(func(v: bool) -> void: VoiceManager.open_mic = v)
+	box.add_child(open_mic)
 
 	box.add_child(_label("Key rebinds — coming soon"))
 	box.add_child(_button("BACK", func() -> void: _settings.visible = false))

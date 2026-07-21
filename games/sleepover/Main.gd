@@ -36,6 +36,9 @@ enum Phase { LOBBY, LIGHTS_OUT, ROUND, RESULTS }
 @export var unzip_chase_penalty: float = 1.0 ## +time while the monster is chasing (panic fumble)
 @export var unzip_loudness: float = 0.85     ## the loud RRRIP the unzip broadcasts
 
+@export_group("Voice")
+@export var voice_range: float = 14.0        ## proximity voice falloff (m); monster never hears voice
+
 var _player: SleepingBagPlayer
 var _monster: NoiseMonster
 var _cam_pivot: Node3D
@@ -58,6 +61,7 @@ var _clock_label: Label
 var _prompt_label: Label
 var _tracker_label: Label
 var _debug_label: Label
+var _voice_label: Label   ## "🗣 name, name" while peers talk
 var _pips: Array[ColorRect] = []
 var _cocoon_overlay: Control
 var _cocoon_text: Label
@@ -361,6 +365,31 @@ func _run_selftest() -> void:
 	var floor_ok := _audit_anchors_on_floor()
 	pass_all = pass_all and floor_ok
 
+	# 14. VOICE PLUMBING (no Steam needed). Synthetic raw PCM through the receive
+	# path: packets count, the speaking indicator fires and clears, and
+	# register/unregister doesn't leak players. Generator frames only push when the
+	# audio driver provides a playback (headless dummy may not) — logged, not asserted.
+	var talk_events: Array = []
+	var talk_cb := func(pid: int, talking: bool) -> void: talk_events.append([pid, talking])
+	VoiceManager.speaking_changed.connect(talk_cb)
+	var vholder := Node3D.new()
+	add_child(vholder)
+	VoiceManager.register_player(999, vholder)
+	var pkts0: int = VoiceManager.stat_rx_packets
+	VoiceManager._handle_voice(999, VoiceManager._make_tone(0.05), true)
+	VoiceManager._handle_voice(999, VoiceManager._make_tone(0.05), true)
+	var rx_ok: bool = VoiceManager.stat_rx_packets == pkts0 + 2
+	var talk_on: bool = VoiceManager.is_speaking(999) and talk_events.has([999, true])
+	VoiceManager._process(1.0)  # expire the speak-hold
+	var talk_off: bool = not VoiceManager.is_speaking(999) and talk_events.has([999, false])
+	VoiceManager.unregister_player(999)
+	var voice_clean: bool = VoiceManager.registered_count() == 0
+	VoiceManager.speaking_changed.disconnect(talk_cb)
+	vholder.queue_free()
+	print("[SELFTEST] voice: rx=%s talk-on=%s talk-off=%s unregister-clean=%s (frames pushed: %d)" % [
+		rx_ok, talk_on, talk_off, voice_clean, VoiceManager.stat_frames_pushed])
+	pass_all = pass_all and rx_ok and talk_on and talk_off and voice_clean
+
 	print("[SELFTEST] RESULT: %s" % ("ALL PASS" if pass_all else "FAIL"))
 	get_tree().quit(0 if pass_all else 1)
 
@@ -607,7 +636,7 @@ func _build_hud() -> void:
 	add_child(layer)
 
 	var help := Label.new()
-	help.text = "WASD shuffle   Space hop   E interact   Q look back   F3 debug   Esc cursor"
+	help.text = "WASD shuffle   Space hop   E interact   Q look back   V talk   F3 debug   Esc cursor"
 	help.position = Vector2(16, 12)
 	layer.add_child(help)
 
@@ -615,6 +644,18 @@ func _build_hud() -> void:
 	_state_label.position = Vector2(16, 40)
 	_state_label.add_theme_font_size_override("font_size", 22)
 	layer.add_child(_state_label)
+
+	# Who's talking (driven by VoiceManager.speaking_changed).
+	_voice_label = Label.new()
+	_voice_label.position = Vector2(16, 96)
+	_voice_label.add_theme_color_override("font_color", Color(0.6, 0.95, 0.7))
+	layer.add_child(_voice_label)
+	VoiceManager.speaking_changed.connect(func(_pid: int, _talking: bool) -> void:
+		var pids := VoiceManager.speaking_pids()
+		var names: Array[String] = []
+		for p: int in pids:
+			names.append(str(LobbyManager.players.get(p, {}).get("name", "player %d" % p)))
+		_voice_label.text = ("🗣 " + ", ".join(names)) if not names.is_empty() else "")
 
 	_net_label = Label.new()
 	_net_label.position = Vector2(16, 72)
@@ -1931,7 +1972,10 @@ func _net_bag_state(pos: Vector3, rot: Quaternion, flags: int, tumbles: int, moo
 	_ghost_targets[pid] = [pos, rot]
 	_ghost_mood[pid] = mood
 	var ghost: Node3D = _remote_bags[pid]
-	ghost.set_meta("cocooned", flags & FLAG_COCOONED != 0)
+	var now_cocooned := flags & FLAG_COCOONED != 0
+	if now_cocooned != bool(ghost.get_meta("cocooned", false)):
+		VoiceManager.set_muffled(pid, now_cocooned)  # voice through fabric
+	ghost.set_meta("cocooned", now_cocooned)
 	ghost.set_meta("hidden", flags & FLAG_HIDDEN != 0)
 	ghost.set_meta("tumbles", tumbles)
 
@@ -1964,6 +2008,12 @@ func begin(is_host: bool, is_test: bool, is_spectator: bool = false) -> void:
 	_player.set_skin(Scrapbook.selected_skin)
 	if is_spectator:
 		_become_spectator()
+
+	# Loopback harness has no Steam and no mic: both sides stream synthetic tone
+	# packets down the real voice RPC path so transport is provable headlessly.
+	if is_test:
+		VoiceManager.test_tone_mode = true
+		VoiceManager.open_mic = true
 
 	if is_test and not is_host:
 		_start_bot_harness()
@@ -2049,6 +2099,7 @@ func _start_bot_harness() -> void:
 	add_child(wander)
 
 func _on_peer_disconnected(pid: int) -> void:
+	VoiceManager.unregister_player(pid)
 	if _remote_bags.has(pid):
 		_remote_bags[pid].queue_free()
 		_remote_bags.erase(pid)
@@ -2071,6 +2122,9 @@ func _spawn_remote_bag(pid: int) -> Node3D:
 	_remote_bags[pid] = ghost
 	_ghost_eyes[pid] = built[1]   # BagEyes for this ghost
 	_ghost_mood[pid] = BagEyes.Mood.IDLE
+	# Their voice comes out of their bag — proximity attenuation via the 3D mixer.
+	VoiceManager.voice_range = voice_range
+	VoiceManager.register_player(pid, ghost)
 	print("[NETTEST] ghost bag spawned for peer %d" % pid)
 	return ghost
 

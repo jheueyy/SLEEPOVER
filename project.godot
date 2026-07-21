@@ -22,6 +22,8 @@ SteamManager="*res://core/networking/SteamManager.gd"
 LobbyManager="*res://core/networking/LobbyManager.gd"
 ; Persistent Scrapbook (lore fragments + cosmetic unlocks), Steam Cloud + local.
 Scrapbook="*res://core/save/Scrapbook.gd"
+; Proximity voice chat (Steam voice API, push-to-talk V, loopback tone mode).
+VoiceManager="*res://core/audio/VoiceManager.gd"
 
 [navigation]
 
