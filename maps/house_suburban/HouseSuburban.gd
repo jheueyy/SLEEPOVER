@@ -69,13 +69,15 @@ const WALLS: Array = [
 	{"a": Vector2(2, 2), "b": Vector2(5, 2), "base": 3.0},                                 # closet|office divider
 	{"a": Vector2(-3, -6), "b": Vector2(-3, -1), "base": 3.0},                             # kid1|kid2
 	{"a": Vector2(2, -6), "b": Vector2(2, -1), "base": 3.0},                               # kid2|upbath
-	# Basement (rec room x3..8, z-6..-1) + a dead-end UTILITY pocket in the SW
-	# corner. Entered via the garage stair hole (lands at the east/south corner).
-	{"a": Vector2(3, -6), "b": Vector2(8, -6), "base": -3.0},   # south (back)
-	{"a": Vector2(3, -1), "b": Vector2(8, -1), "base": -3.0},   # north (front)
-	{"a": Vector2(3, -6), "b": Vector2(3, -1), "base": -3.0},   # west
-	{"a": Vector2(8, -6), "b": Vector2(8, -1), "base": -3.0},   # east
-	{"a": Vector2(5, -6), "b": Vector2(5, -4), "base": -3.0},   # utility divider (stub; the z -4..-1 gap is the pocket's only way in)
+	# Basement — under the garage/pantry (x 2..8, z 0..6). Open rec room + a dead-end
+	# UTILITY/breaker pocket in the NW. The garage down-stairs land in the rec room;
+	# the walkout escape is in the south exterior wall.
+	{"a": Vector2(2, 0), "b": Vector2(8, 0), "base": -3.0},                        # north
+	{"a": Vector2(2, 6), "b": Vector2(8, 6), "base": -3.0, "gaps": [[5, 1.4]]},    # south — walkout exit
+	{"a": Vector2(2, 0), "b": Vector2(2, 6), "base": -3.0},                        # west
+	{"a": Vector2(8, 0), "b": Vector2(8, 6), "base": -3.0},                        # east
+	{"a": Vector2(2, 2), "b": Vector2(4, 2), "base": -3.0, "gaps": [[3, DOOR_W]]}, # utility pocket entrance
+	{"a": Vector2(4, 0), "b": Vector2(4, 2), "base": -3.0},                        # utility pocket east wall (dead-end)
 	# Attic (low walls, over the upper back row)
 	{"a": Vector2(-8, -6), "b": Vector2(2, -6), "base": 6.0, "h": 2.2},
 	{"a": Vector2(-8, -1), "b": Vector2(2, -1), "base": 6.0, "h": 2.2},
@@ -86,12 +88,22 @@ const WALLS: Array = [
 # Floor slabs: rect = [x_min, z_min, x_max, z_max], top = slab top height.
 # Holes (stairwells, chute) are simply not covered by any rect.
 const SLABS: Array = [
-	# Yard (slightly below ground floor so nobody falls into the void)
-	{"rect": [-12.0, -9.0, 12.0, 9.0], "top": -0.05},
-	# Ground floor — hole at x 6.25..7.75, z -6..-1 (basement stairwell, in garage)
-	{"rect": [-8.0, -6.0, 6.25, 6.0], "top": 0.0},
-	{"rect": [6.25, -1.0, 7.75, 6.0], "top": 0.0},
-	{"rect": [7.75, -6.0, 8.0, 6.0], "top": 0.0},
+	# Yard (a safety floor just below the ground floor so nobody falls into the
+	# void) — BUT with a hole under the basement (x2..8, z0..6). Without this hole
+	# the yard slab spans the whole map and a player stepping into the basement
+	# stairwell lands on IT at y≈0 instead of descending — the bug that made the
+	# basement unreachable on foot for every previous build. The basement floor
+	# (y−3) is the safety net inside that hole.
+	{"rect": [-12.0, -9.0, 2.0, 9.0], "top": -0.05},
+	{"rect": [8.0, -9.0, 12.0, 9.0], "top": -0.05},
+	{"rect": [2.0, -9.0, 8.0, 0.0], "top": -0.05},
+	{"rect": [2.0, 6.0, 8.0, 9.0], "top": -0.05},
+	# Ground floor — solid everywhere except the basement stairwell hole in the
+	# garage (x 5.5..7, z 0..5); flat garage floor surrounds it on all sides.
+	{"rect": [-8.0, -6.0, 5.5, 6.0], "top": 0.0},
+	{"rect": [7.0, -6.0, 8.0, 6.0], "top": 0.0},
+	{"rect": [5.5, -6.0, 7.0, 0.0], "top": 0.0},
+	{"rect": [5.5, 5.0, 7.0, 6.0], "top": 0.0},
 	# Upper floor — holes: main stairwell x -1..0.5 z 0..5, chute x 3..4 z 1..2
 	{"rect": [-8.0, -6.0, -1.0, 6.0], "top": 3.0},
 	{"rect": [-1.0, -6.0, 0.5, 0.0], "top": 3.0},
@@ -103,8 +115,10 @@ const SLABS: Array = [
 	# Attic floor — hole at x -3..-1.4, z -6..-1 (attic stairwell; step off sideways)
 	{"rect": [-8.0, -6.0, -3.0, -1.0], "top": 6.0},
 	{"rect": [-1.4, -6.0, 2.0, -1.0], "top": 6.0},
-	# Basement floor (rec room + utility pocket)
-	{"rect": [3.0, -6.0, 8.0, -1.0], "top": -3.0},
+	# Basement floor — under the garage/pantry (x 2..8, z 0..6): open rec room +
+	# a dead-end utility/breaker pocket (NW). The garage down-stairs land in the
+	# rec room; the walkout escape is in the south exterior wall.
+	{"rect": [2.0, 0.0, 8.0, 6.0], "top": -3.0},
 	# Ceilings — the upper front row and the up-bath have the flat roof at y6;
 	# the attic floor already ceils the back row. Garage gets its own roof.
 	{"rect": [-8.0, -1.0, 5.0, 6.0], "top": 6.0},
@@ -115,9 +129,9 @@ const SLABS: Array = [
 # Stairs: start = plan pos of the first step's near edge center; dir = plan
 # direction of climb; base = y of the floor you start from; signed rise.
 const STAIRS: Array = [
-	{"start": Vector2(-0.25, 0.0), "dir": Vector2(0, 1), "base": 0.0, "rise": 0.3, "run": 0.5, "steps": 10, "width": 1.5},  # hall -> upper (walkway stays beside it)
-	{"start": Vector2(7.0, -1.0), "dir": Vector2(0, -1), "base": 0.0, "rise": -0.3, "run": 0.5, "steps": 10, "width": 1.5}, # garage -> basement
-	{"start": Vector2(-2.2, -1.0), "dir": Vector2(0, -1), "base": 3.0, "rise": 0.3, "run": 0.5, "steps": 10, "width": 1.8}, # kid2 -> attic (wider than its hole: top tread overlaps the attic slab sideways)
+	{"start": Vector2(-0.25, 0.0), "dir": Vector2(0, 1), "base": 0.0, "rise": 0.3, "run": 0.5, "steps": 10, "width": 1.5, "to": "UPSTAIRS"},  # hall -> upper (walkway stays beside it)
+	{"start": Vector2(6.25, 0.0), "dir": Vector2(0, 1), "base": 0.0, "rise": -0.3, "run": 0.5, "steps": 10, "width": 1.5, "to": "BASEMENT"}, # garage -> basement: wide, well-lit, with flat garage floor all around the mouth so you can actually reach it
+	{"start": Vector2(-2.2, -1.0), "dir": Vector2(0, -1), "base": 3.0, "rise": 0.3, "run": 0.5, "steps": 10, "width": 1.8, "to": "ATTIC"}, # kid2 -> attic (wider than its hole: top tread overlaps the attic slab sideways)
 	# NOTE: keep stair run >= 0.5 and width >= 1.5, clear of wall footprints —
 	# narrower/shorter treads voxelize into a disconnected navmesh and the
 	# monster can't change floors there. (The 2.1m-wide main stairs are the
@@ -133,9 +147,10 @@ const STAIRS: Array = [
 const NAV_LINKS: Array = [
 	# kid2 <-> attic
 	{"from": Vector3(-1.0, 3.3, -3.0), "to": Vector3(-5.0, 6.3, -3.5)},
-	# garage <-> basement
-	{"from": Vector3(7.0, 0.3, -0.8), "to": Vector3(7.0, -2.7, -5.5)},
-	{"from": Vector3(7.0, -2.7, -5.5), "to": Vector3(6.0, -2.7, -3.5)},
+	# garage <-> basement (down-stairs; two hops: down the flight, then sideways
+	# onto the rec-room floor)
+	{"from": Vector3(6.25, 0.3, -0.3), "to": Vector3(6.25, -2.7, 5.2)},
+	{"from": Vector3(6.25, -2.7, 5.2), "to": Vector3(5.0, -2.7, 3.0)},
 ]
 
 # Monster patrol loop (plan x/z + REAL y of the floor): a lap through the
@@ -145,7 +160,7 @@ const PATROL_LOOP: Array = [
 	Vector3(-5.5, 0.5, -3.5),   # kitchen
 	Vector3(-4.5, 0.5, 2.5),    # living room
 	Vector3(0.5, 0.5, 4.5),     # hall
-	Vector3(6.0, -2.7, -3.5),   # basement rec room (the hum wanders down there)
+	Vector3(5.0, -2.7, 4.0),    # basement rec room (the hum wanders down there)
 	Vector3(0.5, 3.5, 5.3),     # landing (upstairs)
 	Vector3(-4.5, 3.5, 3.5),    # master bed
 	Vector3(-2.0, 3.5, -0.2),   # corridor
@@ -158,7 +173,7 @@ const HIDE_SPOTS: Array = [
 	Vector3(4.2, 0.0, -5.2),    # pantry corner
 	Vector3(4.2, 3.0, 1.2),     # upstairs linen closet
 	Vector3(-7.2, 3.0, 5.2),    # under the master bed
-	Vector3(7.2, -3.0, -2.0),   # basement rec-room NE corner (clear of the breaker)
+	Vector3(7.0, -3.0, 5.0),    # basement rec-room SE corner (clear of the breaker)
 ]
 
 # ── Objective spots (plan x/z + floor y; host picks one clue spot per round) ──
@@ -168,7 +183,7 @@ const CLUE_SPOTS: Array = [
 	Vector3(1.5, 0.0, 3.0),     # hallway table (ground)
 	Vector3(-4.5, 3.0, 3.5),    # master nightstand (upstairs)
 	Vector3(3.5, 3.0, -3.5),    # up-bath cabinet (upstairs)
-	Vector3(7.0, -3.0, -3.5),   # basement shelf (basement)
+	Vector3(5.0, -3.0, 4.0),    # basement rec-room shelf (basement)
 ]
 const PHONE_SPOT := Vector3(1.7, 0.0, 5.4)  # hall wall by the front door
 
@@ -178,9 +193,9 @@ const BREAKER_DIAGRAM_SPOTS: Array = [
 	Vector3(6.4, 0.0, 1.0),     # laundry (ground)
 	Vector3(-5.0, 3.0, -3.5),   # kid room 1 wall (upstairs)
 	Vector3(0.5, 3.0, 5.0),     # landing (upstairs)
-	Vector3(6.0, -3.0, -5.0),   # basement utility (basement)
+	Vector3(3.5, -3.0, 4.5),    # basement rec-room west wall (clear of the stairwell)
 ]
-const BREAKER_BOX_SPOT := Vector3(3.4, -3.0, -5.0)  # west wall of the basement utility pocket (dead-end)
+const BREAKER_BOX_SPOT := Vector3(2.3, -3.0, 1.0)  # west wall of the basement utility pocket (NW dead-end)
 
 # The Dog Has The Keys: grab a snack from the pantry, then reach the wandering
 # dog. The dog paces this ground-floor loop.
@@ -199,7 +214,7 @@ const GARAGE_CLUE_SPOTS: Array = [
 	Vector3(-5.5, 0.0, -3.0),   # kitchen calendar (ground)
 	Vector3(-0.5, 3.0, -3.5),   # kid room 2 cake photo (upstairs)
 	Vector3(3.5, 3.0, 4.0),     # office (upstairs)
-	Vector3(7.0, -3.0, -2.0),   # basement corner (basement)
+	Vector3(7.0, -3.0, 3.0),    # basement rec-room corner (basement)
 ]
 const GARAGE_KEYPAD_SPOT := Vector3(6.5, 0.0, 5.3)  # garage door wall
 
@@ -219,7 +234,7 @@ const EXITS: Array = [
 	{"name": "FRONT DOOR", "at": Vector3(0.5, 1.0, 7.4), "half": Vector2(1.2, 1.2), "door": "front_door"},
 	{"name": "BACK DOOR", "at": Vector3(-0.5, 1.0, -6.6), "half": Vector2(1.2, 1.2), "door": "back_door"},
 	{"name": "GARAGE", "at": Vector3(6.5, 1.0, 7.4), "half": Vector2(1.4, 1.2), "door": "garage_door"},
-	{"name": "BASEMENT WINDOW", "at": Vector3(6.5, -2.0, -5.6), "half": Vector2(1.2, 1.2), "door": ""},
+	{"name": "BASEMENT WINDOW", "at": Vector3(5.0, -2.0, 5.4), "half": Vector2(1.2, 1.2), "door": ""},
 ]
 
 static func exits() -> Array:
@@ -273,15 +288,15 @@ const MONSTER_SPAWN_CANDIDATES: Array = [
 	Vector3(-4.2, 6.4, -4.9),   # attic (far up)
 	Vector3(-6.0, 3.5, -3.5),   # kid room 1 (upstairs far NW)
 	Vector3(3.5, 3.5, 4.0),     # office (upstairs far SE)
-	Vector3(4.0, -3.0, -5.0),   # basement utility (far down)
+	Vector3(2.5, -3.0, 1.0),    # basement utility (far down)
 	Vector3(-6.5, 0.5, -3.5),   # kitchen (ground far NW)
-	Vector3(6.5, 0.5, 4.0),     # garage front (ground far SE, clear of the basement stairs)
+	Vector3(6.5, 0.5, -4.0),    # garage (ground far NE, clear of the basement stairs)
 ]
 
 # Staircase plan positions the monster must NOT spawn on/next to (chokepoints).
 const STAIR_PLAN_POINTS: Array = [
-	Vector2(-0.25, 2.5),   # main stairs (hall <-> upstairs)
-	Vector2(7.0, -3.5),    # basement stairs (garage <-> basement)
+	Vector2(-0.25, 2.5),   # main up-stairs (hall <-> upstairs)
+	Vector2(6.25, 2.5),    # basement down-stairs (garage <-> basement)
 	Vector2(-2.2, -3.5),   # attic stairs (kid2 <-> attic)
 ]
 
@@ -316,8 +331,9 @@ const ROOMS: Array = [
 	{"name": "KID ROOM 1", "at": Vector3(-5.5, 5.2, -3.5)},
 	{"name": "KID ROOM 2", "at": Vector3(-0.5, 5.2, -3.5)},
 	{"name": "UP BATH", "at": Vector3(3.5, 5.2, -3.5)},
-	{"name": "BASEMENT", "at": Vector3(6.0, -1.4, -3.0)},
-	{"name": "UTILITY (BREAKER)", "at": Vector3(4.0, -1.4, -5.0)},
+	{"name": "OPEN REC ROOM", "at": Vector3(5.5, -1.8, 4.0)},
+	{"name": "UTILITY (BREAKER)", "at": Vector3(3.0, -1.8, 1.0)},
+	{"name": "WALKOUT", "at": Vector3(5.0, -1.8, 5.4)},
 	{"name": "ATTIC", "at": Vector3(-3.0, 7.4, -3.5)},
 ]
 
@@ -387,9 +403,9 @@ static func build(parent: Node3D) -> void:
 	# Each is hidden + collision-disabled when ITS objective is completed (Main's
 	# EXIT_OBJECTIVE map); escaping = walking out through an open one.
 	for door_def: Array in [
-			["front_door", 0.5, 1.2, 6.0],
-			["garage_door", 6.5, 1.4, 6.0],
-			["back_door", -0.5, 1.4, -6.0]]:
+			["front_door", 0.5, 1.2, 6.0, "FRONT DOOR"],
+			["garage_door", 6.5, 1.4, 6.0, "GARAGE DOOR"],
+			["back_door", -0.5, 1.4, -6.0, "BACK DOOR"]]:
 		var door := StaticBody3D.new()
 		door.add_to_group(door_def[0])
 		door.position = Vector3(door_def[1] * S, 1.0, door_def[3] * S)
@@ -406,6 +422,15 @@ static func build(parent: Node3D) -> void:
 		door_mat.albedo_color = Color(0.45, 0.30, 0.16)
 		door_mesh.set_surface_override_material(0, door_mat)
 		door.add_child(door_mesh)
+		# Label so a locked exit reads as a DOOR, not a stray brown block. It's a
+		# child of the blocker, so it hides with the door when the exit unlocks.
+		var door_label := Label3D.new()
+		door_label.text = door_def[4]
+		door_label.font_size = 40
+		door_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		door_label.modulate = Color(0.95, 0.85, 0.6, 0.85)
+		door_label.position = Vector3(0, 1.3, 0)
+		door.add_child(door_label)
 		parent.add_child(door)
 
 	# Hiding volumes: translucent green nooks. Main wires their signals.
@@ -573,6 +598,27 @@ static func _build_stairs(parent: Node3D, stair: Dictionary) -> void:
 			Vector3(width if absf(dir.y) > 0.5 else 1.2, 0.3,
 				1.2 if absf(dir.y) > 0.5 else width),
 			COL_FLOOR)
+
+	# Wayfinding: a floating label + a small warm light at the stair MOUTH so the
+	# way down/up is findable in the dark. The back-of-garage basement stairwell
+	# was effectively invisible before this — players thought there was no basement.
+	var to_name: String = stair.get("to", "")
+	if to_name != "":
+		var mouth := Vector3(start.x, base, start.y)
+		var sign := Label3D.new()
+		sign.text = ("▼ " if rise < 0.0 else "▲ ") + to_name
+		sign.font_size = 56
+		sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		sign.modulate = Color(1.0, 0.85, 0.4, 0.9)
+		sign.position = mouth + Vector3(0, 1.7, 0)
+		parent.add_child(sign)
+		var lamp := OmniLight3D.new()
+		lamp.position = mouth + Vector3(0, 1.3, 0)
+		lamp.omni_range = 4.5
+		lamp.light_energy = 0.9
+		lamp.light_color = Color(1.0, 0.88, 0.6)
+		lamp.shadow_enabled = false
+		parent.add_child(lamp)
 
 static func _box(parent: Node3D, center: Vector3, size: Vector3,
 		color: Color, unshaded: bool = false) -> void:

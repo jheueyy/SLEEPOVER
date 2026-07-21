@@ -301,14 +301,17 @@ Everything used to cluster on the ground floor. Now:
   upstairs `y≥2` (attic counts as up).
 
 ## Basement (the dread floor)
-The basement (`y=-3`, under the garage, reached by the garage→basement stairs)
-is an enlarged rec room (`x3–8, z−6..−1`) plus a dead-end **utility pocket** in
-the SW corner that houses the **Breaker** objective. It's the intentionally
-darkest floor: room lamps below ground use `BASEMENT_LIGHT_ENERGY = 0.18`
-(vs `ROOM_LIGHT_ENERGY = 0.7`) with a cold tint. Descent = commit + lose the
-upstairs escapes + a single-stair chokepoint; the walkout (BASEMENT WINDOW exit,
-opened by the **Breaker** objective) is one of the four escape routes. Monster
-patrols in via the garage↔basement nav link.
+The basement (`y=-3`, `x−4..3, z0..6`) sits **under the central hall** and is
+reached by a **central DOWN-stair right beside the up-stair** — one stairwell,
+up→upstairs and down→basement, off the middle of the house (replaced the old
+hidden garage stairwell that players couldn't find/use). It's an open rec room
+plus a dead-end **utility pocket** (NW) housing the **Breaker** objective. The
+intentionally darkest floor: room lamps below ground use `BASEMENT_LIGHT_ENERGY =
+0.18` (vs `ROOM_LIGHT_ENERGY = 0.7`) with a cold tint. Descent = commit + lose the
+upstairs escapes; the walkout (BASEMENT WINDOW exit, opened by the **Breaker**
+objective) is one of the four escape routes. Monster reaches it via the
+hall↔basement nav link (verified: nav path from the living room to both the rec
+room and the breaker pocket).
 
 ## House scale
 `HouseSuburban.S = 1.4` — the whole floor plan is scaled 1.4x at build time

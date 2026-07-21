@@ -325,9 +325,9 @@ func tracker_detail() -> String:
 		ObjectiveDef.Kind.BREAKER:
 			return "fuses %s" % _colour_order()
 		ObjectiveDef.Kind.DOG:
-			return "lure the dog with the pantry snack"
+			return "lure the dog with a snack"
 		ObjectiveDef.Kind.DEADBOLT:
-			return "back door — 2 players, hold E"
+			return "2 players, hold E together"
 		ObjectiveDef.Kind.GLASSES:
 			return "you're the blurry one — find your glasses" if blurred_is_me \
 				else "someone lost their glasses"

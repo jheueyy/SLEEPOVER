@@ -346,8 +346,107 @@ func _run_selftest() -> void:
 		frag_ok, claim_ok, pre_locked, unlock_ok, persist_ok])
 	pass_all = pass_all and frag_ok and claim_ok and pre_locked and unlock_ok and persist_ok
 
+	# 12. BASEMENT ON-FOOT WALKABILITY. Headless can't render, but it runs physics —
+	# raycast the collision surfaces straight down the stair path and confirm a
+	# CONTINUOUS descent from the garage floor (~y0) to the basement (~y−3), with no
+	# gaps you'd fall through and no cliffs you can't step down. This is the check
+	# the last two basement attempts lacked.
+	var walk_ok := _probe_basement_walkable()
+	pass_all = pass_all and walk_ok
+
+	# 13. FLOOR-COVERAGE AUDIT. The basement bug was an anchor/route over a hole or
+	# the void that no test caught. Raycast down at EVERY spawn + objective anchor +
+	# clue spot and confirm solid floor at the expected height — so a clue can never
+	# spawn where a player can't stand.
+	var floor_ok := _audit_anchors_on_floor()
+	pass_all = pass_all and floor_ok
+
 	print("[SELFTEST] RESULT: %s" % ("ALL PASS" if pass_all else "FAIL"))
 	get_tree().quit(0 if pass_all else 1)
+
+## Audit: every gameplay anchor sits on solid floor at its expected height (no
+## holes, no void). Returns false + prints the offenders if any anchor is unsupported.
+func _audit_anchors_on_floor() -> bool:
+	var space := get_world_3d().direct_space_state
+	var bad: Array[String] = []
+	var n := 0
+	# Objective action + clue anchors (plan coords; y is the floor they sit on).
+	var singles := {
+		"phone": HouseSuburban.PHONE_SPOT, "breaker_box": HouseSuburban.BREAKER_BOX_SPOT,
+		"garage_keypad": HouseSuburban.GARAGE_KEYPAD_SPOT, "deadbolt": HouseSuburban.DEADBOLT_SPOT,
+		"dog_snack": HouseSuburban.DOG_SNACK_SPOT,
+	}
+	for label: String in singles:
+		n += 1
+		if not _floor_under(space, singles[label], singles[label].y):
+			bad.append(label)
+	var pools := {
+		"clue": HouseSuburban.CLUE_SPOTS, "garage_clue": HouseSuburban.GARAGE_CLUE_SPOTS,
+		"breaker_diag": HouseSuburban.BREAKER_DIAGRAM_SPOTS, "glasses": HouseSuburban.GLASSES_SPOTS,
+	}
+	for pool_name: String in pools:
+		var pool: Array = pools[pool_name]
+		for i in pool.size():
+			n += 1
+			if not _floor_under(space, pool[i], pool[i].y):
+				bad.append("%s[%d]" % [pool_name, i])
+	# Player spawns are already world coords, standing on the ground floor (y0).
+	for i in HouseSuburban.SPAWNS.size():
+		n += 1
+		var sp: Vector3 = HouseSuburban.SPAWNS[i]
+		if not _floor_under_world(space, sp, 0.0):
+			bad.append("spawn[%d]" % i)
+	var ok := bad.is_empty()
+	print("[SELFTEST] anchors-on-floor: %d checked, bad=%s -> %s" % [n, str(bad), ok])
+	return ok
+
+func _floor_under(space: PhysicsDirectSpaceState3D, plan_pt: Vector3, floor_y: float) -> bool:
+	return _floor_under_world(space, HouseSuburban.scaled(plan_pt), floor_y)
+
+func _floor_under_world(space: PhysicsDirectSpaceState3D, w: Vector3, floor_y: float) -> bool:
+	var q := PhysicsRayQueryParameters3D.create(
+		Vector3(w.x, floor_y + 1.2, w.z), Vector3(w.x, floor_y - 1.6, w.z))
+	q.collision_mask = 0xFFFFFFFF
+	var hit := space.intersect_ray(q)
+	return not hit.is_empty() and absf((hit["position"] as Vector3).y - floor_y) < 0.7
+
+## Raycast down the basement stair path and verify a continuous walkable descent:
+## every sample hits a surface (no fall-through gap) and consecutive surfaces never
+## drop more than one comfortable step (no un-walkable cliff), ending at basement depth.
+func _probe_basement_walkable() -> bool:
+	var space := get_world_3d().direct_space_state
+	var s := HouseSuburban.S
+	var xw := 6.25 * s   # plan x of the garage down-stairs
+	var prev_y := 0.5
+	var gaps := 0
+	var cliffs := 0
+	var deepest := 0.0
+	# Sample straight down the descending run (plan z 0.1..4.7, inside the hole).
+	for i in range(0, 11):
+		var zp := lerpf(0.1, 4.7, float(i) / 10.0)
+		var from := Vector3(xw, 1.6, zp * s)
+		var to := Vector3(xw, -4.0, zp * s)
+		var q := PhysicsRayQueryParameters3D.create(from, to)
+		q.collision_mask = 0xFFFFFFFF   # treads (layer 1) + player ramp (layer 2)
+		var hit := space.intersect_ray(q)
+		if hit.is_empty():
+			gaps += 1
+			continue
+		var y: float = hit.position.y
+		if prev_y - y > 0.55:   # a single step is 0.3; >0.55 = an un-steppable cliff
+			cliffs += 1
+		prev_y = y
+		deepest = minf(deepest, y)
+	# The bottom landing sits under the ground-floor south lip; probe it from just
+	# below that lip so the ground slab doesn't shadow it.
+	var land := HouseSuburban.scaled(Vector3(6.25, -2.7, 5.2))
+	var lq := PhysicsRayQueryParameters3D.create(land + Vector3(0, 0.8, 0), land - Vector3(0, 1.0, 0))
+	lq.collision_mask = 0xFFFFFFFF
+	var land_hit := not space.intersect_ray(lq).is_empty()
+	var ok := gaps == 0 and cliffs == 0 and deepest < -2.3 and land_hit
+	print("[SELFTEST] basement-walk: gaps=%d cliffs=%d deepest=%.2f landing=%s -> %s" % [
+		gaps, cliffs, deepest, land_hit, ok])
+	return ok
 
 ## Selftest helper: complete one drawn door-objective, then fill to 3 total, and
 ## return the exit that opened (a door-objective is always in a 5-of-6 draw).
@@ -1156,19 +1255,19 @@ func _mark_objective_done(id: String) -> void:
 				_blur_overlay.visible = false  # got the glasses
 	_refresh_exit_doors()  # this objective may have opened a specific door
 	var opened := _exit_for_objective(id)
+	# WHAT + WHETHER, never WHERE: don't name the door — a door-objective just says
+	# it opened an exit; the player finds the now-open door in the world.
 	if opened != "":
-		_show_toast("%s is UNLOCKED.  (%d/3 tasks)" % [opened, mini(_done_ids.size(), 3)], 4.0)
+		_show_toast("Task done (%d/3) — a door just unlocked!" % mini(_done_ids.size(), 3), 4.0)
 	else:
-		_show_toast("Task done (%d/3).  %s" % [mini(_done_ids.size(), 3), id], 3.0)
+		_show_toast("Task done (%d/3)." % mini(_done_ids.size(), 3), 3.0)
 	print("[NETTEST] objective done: %s (%d) opened=%s" % [id, _done_ids.size(), opened])
 
 func _arm_escape() -> void:
 	_escape_armed = true
 	_refresh_exit_doors()
-	var open_names := _open_exit_names()
-	var which := ", ".join(open_names) if not open_names.is_empty() else "no doors yet — finish a door task"
-	_show_toast("3 TASKS DONE. Escape is on — GET OUT.  OPEN: %s" % which, 6.0)
-	print("[NETTEST] escape armed open=%s" % which)
+	_show_toast("3 TASKS DONE. The exits are open — GET OUT.", 6.0)
+	print("[NETTEST] escape armed open=%s" % ", ".join(_open_exit_names()))
 
 ## The exit name a given objective unlocks ("" if it's a support objective).
 func _exit_for_objective(id: String) -> String:
@@ -1586,8 +1685,8 @@ func _update_prompts() -> void:
 			return
 
 func _update_tracker() -> void:
-	# WHAT + WHETHER, never WHERE. Name only until a clue is found; then the
-	# action detail. State: [x] done, [~] in progress, [ ] not started.
+	# WHAT + WHETHER, never WHERE. Name + state only; the action detail (what to
+	# DO, e.g. the dialed number — never a location) reveals after a clue is found.
 	var text := "ESCAPE  %d / 3 tasks\n" % mini(_done_ids.size(), 3)
 	for o: Objective in _objectives:
 		var box := " "
@@ -1595,16 +1694,13 @@ func _update_tracker() -> void:
 			Objective.Tracker.DONE: box = "x"
 			Objective.Tracker.IN_PROGRESS: box = "~"
 		var line := "[%s] %s" % [box, o.def.display_name]
-		# Name the door this task opens, so players know what each objective buys.
-		var door := _exit_for_objective(o.def.id)
-		if door != "":
-			line += "  (%s)" % door
 		if o.is_revealed() and o.tracker_state() != Objective.Tracker.DONE:
-			line += "  —  " + o.tracker_detail()
+			var detail := o.tracker_detail()
+			if detail != "":
+				line += "  —  " + detail
 		text += line + "\n"
 	if _escape_armed:
-		var open_names := _open_exit_names()
-		text += "\nOPEN: %s" % (", ".join(open_names) if not open_names.is_empty() else "finish a door task!")
+		text += "\nTHE EXITS ARE OPEN — GET OUT."
 	if _frag_spawned > 0:
 		text += "\n\n✦ LORE  %d / %d found" % [_collected_this_round(), _frag_spawned]
 	_tracker_label.text = text
@@ -1865,9 +1961,9 @@ func begin(is_host: bool, is_test: bool, is_spectator: bool = false) -> void:
 # alcove (Breaker anchor) are both navmesh-reachable from the ground floor.
 func _probe_basement_nav() -> void:
 	var map := get_world_3d().navigation_map
-	var from := Vector3(9.1, 0.5, 0.0)  # garage, ground floor
+	var from := HouseSuburban.scaled(Vector3(6.5, 0.5, -2.0))  # garage, ground floor
 	var targets := {
-		"rec_room": HouseSuburban.scaled(Vector3(6.0, -2.7, -3.5)),
+		"rec_room": HouseSuburban.scaled(Vector3(5.0, -2.7, 4.0)),
 		"utility_breaker": HouseSuburban.scaled(HouseSuburban.BREAKER_BOX_SPOT + Vector3(0.6, 0, 0)),
 	}
 	for label: String in targets:
