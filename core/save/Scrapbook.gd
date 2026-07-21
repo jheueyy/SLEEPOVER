@@ -14,6 +14,17 @@ const SAVE_PATH := "user://scrapbook.save"
 const CLOUD_FILE := "scrapbook.save"
 const SAVE_VERSION := 1
 
+## Selftest redirects persistence to a scratch file so tests NEVER touch the
+## player's real Scrapbook (they used to — the harness collects fragments through
+## the real code path, which silently awarded unearned progression). "" = real save.
+var _path_override: String = ""
+
+func save_path() -> String:
+	return _path_override if _path_override != "" else SAVE_PATH
+
+func use_test_path(p: String) -> void:
+	_path_override = p
+
 signal changed   ## emitted whenever collection / unlocks / selection change
 
 var collected: Array[String] = []   ## fragment ids ever collected (the Scrapbook)
@@ -136,21 +147,22 @@ func _from_dict(d: Dictionary) -> void:
 
 func save_game() -> void:
 	var bytes := JSON.stringify(_to_dict()).to_utf8_buffer()
-	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
+	var f := FileAccess.open(save_path(), FileAccess.WRITE)
 	if f != null:
 		f.store_buffer(bytes)
 		f.close()
-	_cloud_write(bytes)
+	if _path_override == "":   # never sync test data to the cloud
+		_cloud_write(bytes)
 
 func load_game() -> void:
 	# Prefer local; fall back to the Steam Cloud copy (fresh machine, same account).
 	var bytes := PackedByteArray()
-	if FileAccess.file_exists(SAVE_PATH):
-		var f := FileAccess.open(SAVE_PATH, FileAccess.READ)
+	if FileAccess.file_exists(save_path()):
+		var f := FileAccess.open(save_path(), FileAccess.READ)
 		if f != null:
 			bytes = f.get_buffer(f.get_length())
 			f.close()
-	if bytes.is_empty():
+	if bytes.is_empty() and _path_override == "":
 		bytes = _cloud_read()
 	if bytes.is_empty():
 		return

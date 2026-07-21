@@ -324,6 +324,18 @@ func _run_selftest() -> void:
 	# 11. LORE FRAGMENTS + SCRAPBOOK. Fragments spawn 3-4 at clue anchors; a claim
 	# is once-per-lobby (duplicates ignored); collecting fills the Scrapbook, which
 	# unlocks a skin and survives a save/load round-trip.
+	# SANDBOX the player's save for the rest of the harness. Collecting fragments
+	# goes through the real code path (which persists), so without this the tests
+	# silently award unearned Scrapbook progression to whoever runs them — and then
+	# "skin-was-locked" can never pass again. Start from a clean scratch file.
+	Scrapbook.use_test_path("user://selftest_scrapbook.save")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://selftest_scrapbook.save"))
+	Scrapbook.collected = []
+	Scrapbook.selected_skin = 0
+	Scrapbook.voice_enabled = true
+	Scrapbook.voice_open_mic = false
+	VoiceManager.open_mic = false
+
 	_apply_phase(Phase.LOBBY, {})
 	_host_start_round()
 	var frag_ok := _fragments.size() >= fragment_spawn_min and _fragments.size() <= fragment_spawn_max
@@ -331,11 +343,11 @@ func _run_selftest() -> void:
 	_authoritative_collect_fragment(first_id, 1)
 	_authoritative_collect_fragment(first_id, 1)  # duplicate — must be ignored
 	var claim_ok := _collected_this_round() == 1 and _fragment_by_id(first_id).collected
-	# Scrapbook: snapshot, complete page 0, assert unlock + persistence, then restore.
-	var backup := Scrapbook.collected.duplicate()
-	var sel_backup := Scrapbook.selected_skin
+	# Scrapbook (sandboxed): page 0 starts locked, completing it unlocks its skin,
+	# and that survives a reload. Deterministic — we own this scratch file.
 	var page0: Array = LoreFragments.PAGES[0]["fragments"]
 	var page0_skin := int(LoreFragments.PAGES[0]["unlocks_skin"])
+	Scrapbook.collected = []                       # clean slate, ignore the round's grab
 	var pre_locked := not Scrapbook.is_skin_unlocked(page0_skin)
 	for fid: String in page0:
 		Scrapbook.collect(fid)
@@ -344,9 +356,6 @@ func _run_selftest() -> void:
 	Scrapbook.collected = []
 	Scrapbook.load_game()
 	var persist_ok := Scrapbook.page_complete(0)   # reloaded from disk
-	Scrapbook.collected = backup                   # restore the dev's real save
-	Scrapbook.selected_skin = sel_backup
-	Scrapbook.save_game()
 	print("[SELFTEST] lore: spawn3-4=%s claim-once=%s skin-was-locked=%s unlock=%s persist=%s" % [
 		frag_ok, claim_ok, pre_locked, unlock_ok, persist_ok])
 	pass_all = pass_all and frag_ok and claim_ok and pre_locked and unlock_ok and persist_ok
@@ -413,18 +422,19 @@ func _run_selftest() -> void:
 
 	# 16. MIC MODE persists. A mic mode you must re-pick every launch is one you'll
 	# come to hate — so it lives in the Scrapbook prefs and survives a reload.
-	var mic_backup := Scrapbook.voice_open_mic
-	var mic_start := VoiceManager.open_mic
-	VoiceManager.toggle_open_mic()
-	var flipped: bool = VoiceManager.open_mic != mic_start and Scrapbook.voice_open_mic == VoiceManager.open_mic
-	Scrapbook.voice_open_mic = not VoiceManager.open_mic   # scramble, then reload from disk
+	VoiceManager.toggle_open_mic()                          # false -> true
+	var flipped: bool = VoiceManager.open_mic and Scrapbook.voice_open_mic
+	Scrapbook.voice_open_mic = false                        # scramble, then reload from disk
 	Scrapbook.load_game()
-	var mic_persist: bool = Scrapbook.voice_open_mic == VoiceManager.open_mic
-	VoiceManager.set_open_mic(mic_start)                   # restore the dev's real pref
-	Scrapbook.voice_open_mic = mic_backup
-	Scrapbook.save_game()
+	var mic_persist: bool = Scrapbook.voice_open_mic == true
 	print("[SELFTEST] mic-mode: toggles=%s persists-across-reload=%s" % [flipped, mic_persist])
 	pass_all = pass_all and flipped and mic_persist
+
+	# Hand the player's real save back, untouched by any of the above.
+	Scrapbook.use_test_path("")
+	Scrapbook.load_game()
+	VoiceManager.open_mic = Scrapbook.voice_open_mic
+	VoiceManager.enabled = Scrapbook.voice_enabled
 
 	print("[SELFTEST] RESULT: %s" % ("ALL PASS" if pass_all else "FAIL"))
 	get_tree().quit(0 if pass_all else 1)
