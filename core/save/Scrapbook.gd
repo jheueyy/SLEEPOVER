@@ -20,6 +20,10 @@ var collected: Array[String] = []   ## fragment ids ever collected (the Scrapboo
 var selected_skin: int = 0          ## the bag skin the local player wears
 var seen_intro: bool = false        ## bookends are skippable after the first view
 var seen_outro: bool = false
+# Voice prefs live here too — this is the player-prefs store, and a mic mode you
+# have to re-pick every launch is a mic mode you'll end up hating.
+var voice_enabled: bool = true
+var voice_open_mic: bool = false    ## false = push-to-talk
 
 func _ready() -> void:
 	load_game()
@@ -115,6 +119,8 @@ func _to_dict() -> Dictionary:
 		"selected_skin": selected_skin,
 		"seen_intro": seen_intro,
 		"seen_outro": seen_outro,
+		"voice_enabled": voice_enabled,
+		"voice_open_mic": voice_open_mic,
 	}
 
 func _from_dict(d: Dictionary) -> void:
@@ -125,6 +131,8 @@ func _from_dict(d: Dictionary) -> void:
 	selected_skin = int(d.get("selected_skin", 0))
 	seen_intro = bool(d.get("seen_intro", false))
 	seen_outro = bool(d.get("seen_outro", false))
+	voice_enabled = bool(d.get("voice_enabled", true))
+	voice_open_mic = bool(d.get("voice_open_mic", false))
 
 func save_game() -> void:
 	var bytes := JSON.stringify(_to_dict()).to_utf8_buffer()

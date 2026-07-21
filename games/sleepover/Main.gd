@@ -62,6 +62,7 @@ var _prompt_label: Label
 var _tracker_label: Label
 var _debug_label: Label
 var _voice_label: Label   ## "🗣 name, name" while peers talk
+var _mic_label: Label     ## "MIC: PUSH-TO-TALK (V)" / "OPEN MIC" / "VOICE OFF"
 var _pips: Array[ColorRect] = []
 var _cocoon_overlay: Control
 var _cocoon_text: Label
@@ -410,6 +411,21 @@ func _run_selftest() -> void:
 		thru_floor, not open_room, shaft_clear, occl_ok])
 	pass_all = pass_all and occl_ok
 
+	# 16. MIC MODE persists. A mic mode you must re-pick every launch is one you'll
+	# come to hate — so it lives in the Scrapbook prefs and survives a reload.
+	var mic_backup := Scrapbook.voice_open_mic
+	var mic_start := VoiceManager.open_mic
+	VoiceManager.toggle_open_mic()
+	var flipped: bool = VoiceManager.open_mic != mic_start and Scrapbook.voice_open_mic == VoiceManager.open_mic
+	Scrapbook.voice_open_mic = not VoiceManager.open_mic   # scramble, then reload from disk
+	Scrapbook.load_game()
+	var mic_persist: bool = Scrapbook.voice_open_mic == VoiceManager.open_mic
+	VoiceManager.set_open_mic(mic_start)                   # restore the dev's real pref
+	Scrapbook.voice_open_mic = mic_backup
+	Scrapbook.save_game()
+	print("[SELFTEST] mic-mode: toggles=%s persists-across-reload=%s" % [flipped, mic_persist])
+	pass_all = pass_all and flipped and mic_persist
+
 	print("[SELFTEST] RESULT: %s" % ("ALL PASS" if pass_all else "FAIL"))
 	get_tree().quit(0 if pass_all else 1)
 
@@ -656,9 +672,20 @@ func _build_hud() -> void:
 	add_child(layer)
 
 	var help := Label.new()
-	help.text = "WASD shuffle   Space hop   E interact   Q look back   V talk   F3 debug   Esc cursor"
+	help.text = "WASD shuffle   Space hop   E interact   Q look back   V talk   M mic mode   F3 debug   Esc cursor"
 	help.position = Vector2(16, 12)
 	layer.add_child(help)
+
+	# Always show which mic mode you're in — a hot mic you didn't know about is the
+	# single worst voice-chat surprise.
+	_mic_label = Label.new()
+	_mic_label.position = Vector2(16, 72)
+	_mic_label.add_theme_color_override("font_color", Color(0.75, 0.8, 0.95))
+	layer.add_child(_mic_label)
+	var refresh_mic := func(_v: bool = false) -> void:
+		_mic_label.text = "MIC: %s" % VoiceManager.mic_mode_text()
+	refresh_mic.call()
+	VoiceManager.mic_mode_changed.connect(refresh_mic)
 
 	_state_label = Label.new()
 	_state_label.position = Vector2(16, 40)
@@ -1589,6 +1616,10 @@ func _unhandled_input(event: InputEvent) -> void:
 						_net_phase.rpc(Phase.LOBBY, {})
 			KEY_E:
 				_try_interact_press()
+			KEY_M:
+				# Flip push-to-talk <-> open mic mid-round (persists).
+				VoiceManager.toggle_open_mic()
+				_show_toast("MIC: %s" % VoiceManager.mic_mode_text(), 2.0)
 			_:
 				var digit := _keycode_to_digit(event.keycode)
 				if digit != -1:

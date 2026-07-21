@@ -157,6 +157,9 @@ func _build_lobby() -> Control:
 	btns.add_child(_button("LEAVE", func() -> void: _leave_to_menu()))
 	root.add_child(btns)
 	root.add_child(_button("SCRAPBOOK / SKINS", func() -> void: _open_scrapbook()))
+	# Voice/mic settings belong here too — the lobby is where you sort your mic out
+	# before a round, not the main menu you already walked past.
+	root.add_child(_button("SETTINGS", func() -> void: _settings.visible = true))
 	return root
 
 func _build_settings() -> Control:
@@ -202,13 +205,17 @@ func _build_settings() -> Control:
 	var voice_on := CheckButton.new()
 	voice_on.text = "Voice chat enabled"
 	voice_on.button_pressed = VoiceManager.enabled
-	voice_on.toggled.connect(func(v: bool) -> void: VoiceManager.enabled = v)
+	voice_on.toggled.connect(func(v: bool) -> void: VoiceManager.set_enabled(v))
 	box.add_child(voice_on)
 	var open_mic := CheckButton.new()
 	open_mic.text = "Open mic  (off = push-to-talk V)"
 	open_mic.button_pressed = VoiceManager.open_mic
-	open_mic.toggled.connect(func(v: bool) -> void: VoiceManager.open_mic = v)
+	open_mic.toggled.connect(func(v: bool) -> void: VoiceManager.set_open_mic(v))
 	box.add_child(open_mic)
+	# In-game M flips this too — keep the box honest if it changed elsewhere.
+	VoiceManager.mic_mode_changed.connect(func(v: bool) -> void:
+		open_mic.set_pressed_no_signal(v)
+		voice_on.set_pressed_no_signal(VoiceManager.enabled))
 
 	box.add_child(_label("Key rebinds — coming soon"))
 	box.add_child(_button("BACK", func() -> void: _settings.visible = false))
@@ -332,7 +339,8 @@ func _show(s: State) -> void:
 	_ui_layer.visible = s != State.GAME
 	_menu.visible = s == State.MENU
 	_lobby.visible = s == State.LOBBY
-	if s != State.MENU:
+	# Settings is available from the menu AND the lobby (mic setup happens there).
+	if s == State.GAME:
 		_settings.visible = false
 	if s == State.GAME and _scrapbook:
 		_scrapbook.visible = false

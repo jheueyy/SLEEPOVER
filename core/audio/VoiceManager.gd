@@ -51,8 +51,40 @@ var _cocooned: Dictionary = {}   ## pid -> bool (zipped in: the tightest muffle)
 var _occluded: Dictionary = {}   ## pid -> bool (no line of sight: wall/floor between us)
 var _occl_cd: float = 0.0
 
+signal mic_mode_changed(open_mic: bool)
+
 func _ready() -> void:
 	_ensure_occluded_bus()
+	# Mic prefs persist (Scrapbook autoloads before this one).
+	enabled = Scrapbook.voice_enabled
+	open_mic = Scrapbook.voice_open_mic
+
+## Push-to-talk <-> open mic. Persists, and announces so HUD/settings stay in sync
+## no matter which one flipped it.
+func set_open_mic(v: bool) -> void:
+	if v == open_mic:
+		return
+	open_mic = v
+	Scrapbook.voice_open_mic = v
+	Scrapbook.save_game()
+	mic_mode_changed.emit(v)
+
+func toggle_open_mic() -> void:
+	set_open_mic(not open_mic)
+
+func set_enabled(v: bool) -> void:
+	if v == enabled:
+		return
+	enabled = v
+	Scrapbook.voice_enabled = v
+	Scrapbook.save_game()
+	mic_mode_changed.emit(open_mic)
+
+## "OPEN MIC" / "PUSH-TO-TALK (V)" / "VOICE OFF" — for HUD + settings labels.
+func mic_mode_text() -> String:
+	if not enabled:
+		return "VOICE OFF"
+	return "OPEN MIC" if open_mic else "PUSH-TO-TALK (V)"
 
 func _process(delta: float) -> void:
 	_update_capture(delta)

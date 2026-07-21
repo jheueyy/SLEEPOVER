@@ -285,8 +285,17 @@ tells; get in your bag) is *inferable* from the fragments + behaviour alone.
 ## Proximity voice (`core/audio/VoiceManager.gd`, autoload)
 Capture is the **Steam voice API** (compression is Steam's; uses the **system
 default** input device — the API has no per-device select, so settings has no
-misleading dropdown). Push-to-talk **V** by default; "open mic" + "voice enabled"
-toggles in settings. Packets ride the same RPC stack as gameplay
+misleading dropdown).
+
+**Mic mode: push-to-talk (default) ↔ open mic.** Flip it three ways, all the same
+state: the **Settings** panel (reachable from the main menu **and the lobby** — mic
+setup happens right before a round, not on a menu you already walked past), or **M
+in-game** to flip mid-round. It **persists** in the Scrapbook prefs (`voice_open_mic`,
+`voice_enabled`) — a mic mode you must re-pick every launch is one you'll come to
+hate. `mic_mode_changed` keeps the HUD and the settings checkboxes in sync whichever
+one flipped it, and the HUD **always shows the current mode** (`MIC: PUSH-TO-TALK (V)`
+/ `OPEN MIC` / `VOICE OFF`) — a hot mic you didn't know about is the worst voice-chat
+surprise there is. Packets ride the same RPC stack as gameplay
 (`any_peer, unreliable`); **sender identity comes from the transport**, never the
 packet. No Steam (solo / `--enet-*` loopback): `test_tone_mode` streams synthetic
 s16 tone packets down the identical path, so transport is provable headlessly.
