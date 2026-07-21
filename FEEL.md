@@ -282,6 +282,36 @@ tells; get in your bag) is *inferable* from the fragments + behaviour alone.
   Housesitter `withdraw()`s; **OUTRO ALL-TUCKED-IN** = the house goes quiet, lullaby
   fades. `Main._start_outro/_update_outro`, overlaid on the results.
 
+## Recap + awards (`games/sleepover/Awards.gd`)
+The recap is the **shareable artifact that ends every session** (build spec), so it
+shows real names from the lobby roster (never peer IDs), each player's **fate**
+("escaped / tucked in / survived till sunrise"), and the awards earned.
+
+Six, data-driven in `Awards.DEFS` so they're cheap to swap after playtests:
+**MOST FALLS** (tumbles) · **LOUDEST ZIPPER** (total noise emitted) · **CLUTCH RESCUE**
+(rescues) · **LORE HOUND** (fragments) · **QUIET AS A MOUSE** (fewest pings) ·
+**FIRST TUCKED IN** (ordinal — who the Housesitter got first).
+
+- **Every line must be true.** An award nobody earned is **omitted**, never
+  "Clutch Rescue — nobody". Ties break on the **lowest pid** so host and clients
+  render an identical card.
+- `Awards.compute()` is a **pure function** of the stats dict — no node access — so it's
+  exhaustively testable headless and keeps award churn out of the 2k-line `Main.gd`.
+- Stats are collected **host-side from hooks that already existed** (cocoon, rescue,
+  fragment, escape, noise, tumbles) and ride the RESULTS payload `_host_end_round`
+  already sends — **zero new RPCs**. Noise only counts **during ROUND**, so lobby
+  thumps and respawn settles can't hand out a bogus Loudest Zipper.
+- **Career totals** (`Scrapbook.career_*`) bank one row per round — the "identity
+  investment" number that makes *run it back* stick.
+
+## Cocooned spectator cam
+Cocooned players can press **TAB** to watch a teammate (`[` / `]` to cycle). It is
+**opt-in**: fabric-dark stays the default view so Sprint 5's claustrophobic cocoon beat
+survives — you're just never stuck staring at fabric for minutes waiting on a rescue
+that isn't coming. Auto-returns on rescue, on the round ending, or if the person you're
+watching gets cocooned themselves. **Only available while cocooned** — a live player
+watching through a teammate's eyes would be an information exploit.
+
 ## Proximity voice (`core/audio/VoiceManager.gd`, autoload)
 Capture is the **Steam voice API** (compression is Steam's; uses the **system
 default** input device — the API has no per-device select, so settings has no

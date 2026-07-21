@@ -83,6 +83,15 @@ var _phone_label: Label
 var phase: Phase = Phase.LOBBY
 var _phase_timer: float = 0.0
 var _round_elapsed: float = 0.0
+# Host-side per-player round stats for the recap awards. Fed from hooks the host
+# ALREADY receives (cocoon/rescue/fragment/escape/noise) — no new RPCs; it rides
+# along in the RESULTS payload _host_end_round already sends.
+var _round_stats: Dictionary = {}
+var _cocoon_counter: int = 0
+# Cocooned spectator cam: -1 = your own (fabric-dark) view. Opt-in via TAB so the
+# claustrophobic cocoon beat stays the default, but you're never stuck staring at
+# fabric for minutes waiting on a rescue that isn't coming.
+var _spectating: int = -1
 var _objectives: Array[Objective] = []   ## the 5 active this round
 var _done_ids: Array[String] = []        ## objective ids completed (need 3)
 var _escape_armed: bool = false
@@ -167,6 +176,22 @@ func _ready() -> void:
 # hide/ping logic without a second player or the stochastic live chase.
 func _run_selftest() -> void:
 	var pass_all := true
+	# SANDBOX the player's save for the WHOLE harness, before anything runs. Several
+	# groups end rounds, and a round-end banks career stats through Scrapbook — so
+	# this has to be the first thing that happens or the tests quietly write to the
+	# player's real save (which is exactly the bug 515850d fixed for fragments).
+	Scrapbook.use_test_path("user://selftest_scrapbook.save")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://selftest_scrapbook.save"))
+	Scrapbook.collected = []
+	Scrapbook.selected_skin = 0
+	Scrapbook.voice_enabled = true
+	Scrapbook.voice_open_mic = false
+	Scrapbook.career_rounds = 0
+	Scrapbook.career_tumbles = 0
+	Scrapbook.career_rescues = 0
+	Scrapbook.career_fragments = 0
+	VoiceManager.open_mic = false
+
 	# 1. OBJECTIVES + ESCAPE. 5 spawn; every door starts locked; completing 3 arms
 	#    the phase, and a door only opens once ITS objective is done. We escape
 	#    through the door that the completed objective actually unlocked.
@@ -324,18 +349,7 @@ func _run_selftest() -> void:
 	# 11. LORE FRAGMENTS + SCRAPBOOK. Fragments spawn 3-4 at clue anchors; a claim
 	# is once-per-lobby (duplicates ignored); collecting fills the Scrapbook, which
 	# unlocks a skin and survives a save/load round-trip.
-	# SANDBOX the player's save for the rest of the harness. Collecting fragments
-	# goes through the real code path (which persists), so without this the tests
-	# silently award unearned Scrapbook progression to whoever runs them — and then
-	# "skin-was-locked" can never pass again. Start from a clean scratch file.
-	Scrapbook.use_test_path("user://selftest_scrapbook.save")
-	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://selftest_scrapbook.save"))
-	Scrapbook.collected = []
-	Scrapbook.selected_skin = 0
-	Scrapbook.voice_enabled = true
-	Scrapbook.voice_open_mic = false
-	VoiceManager.open_mic = false
-
+	Scrapbook.collected = []   # ignore whatever the earlier round-groups collected
 	_apply_phase(Phase.LOBBY, {})
 	_host_start_round()
 	var frag_ok := _fragments.size() >= fragment_spawn_min and _fragments.size() <= fragment_spawn_max
@@ -429,6 +443,68 @@ func _run_selftest() -> void:
 	var mic_persist: bool = Scrapbook.voice_open_mic == true
 	print("[SELFTEST] mic-mode: toggles=%s persists-across-reload=%s" % [flipped, mic_persist])
 	pass_all = pass_all and flipped and mic_persist
+
+	# 17. AWARDS. Pure function of a stats dict — fully deterministic. Must pick the
+	# right winners, break ties on the lowest pid so every machine renders the same
+	# card, and OMIT awards nobody earned (never "Clutch Rescue — nobody").
+	var s1 := Awards.blank_stats(); s1["tumbles"] = 5; s1["noise_pings"] = 9
+	s1["noise_total"] = 6.0; s1["cocooned_order"] = 1
+	var s2 := Awards.blank_stats(); s2["tumbles"] = 2; s2["noise_pings"] = 1
+	s2["noise_total"] = 0.5; s2["rescues"] = 2; s2["fragments"] = 3; s2["escaped"] = true
+	var s3 := Awards.blank_stats(); s3["tumbles"] = 5; s3["noise_pings"] = 4
+	s3["noise_total"] = 2.0; s3["cocooned_order"] = 0
+	var won := {}
+	for a: Dictionary in Awards.compute({11: s1, 12: s2, 13: s3}):
+		won[a["title"]] = a["pid"]
+	var aw_falls: bool = won.get("MOST FALLS") == 11          # 5 vs 5 tie -> lowest pid
+	var aw_loud: bool = won.get("LOUDEST ZIPPER") == 11
+	var aw_resc: bool = won.get("CLUTCH RESCUE") == 12
+	var aw_lore: bool = won.get("LORE HOUND") == 12
+	var aw_quiet: bool = won.get("QUIET AS A MOUSE") == 12    # fewest pings
+	var aw_first: bool = won.get("FIRST TUCKED IN") == 13     # order 0, not 1
+	# Nobody rescued / collected / got caught -> those awards must not appear at all.
+	var bare := Awards.blank_stats(); bare["noise_pings"] = 1; bare["noise_total"] = 0.2
+	var bare2 := Awards.blank_stats(); bare2["noise_pings"] = 2; bare2["noise_total"] = 0.3
+	var sparse := {}
+	for a: Dictionary in Awards.compute({21: bare, 22: bare2}):
+		sparse[a["title"]] = true
+	var aw_omit: bool = not sparse.has("CLUTCH RESCUE") and not sparse.has("LORE HOUND") \
+		and not sparse.has("FIRST TUCKED IN") and not sparse.has("MOST FALLS")
+	var aw_fate: bool = Awards.fate_of(s2, "SUNRISE") == "escaped" \
+		and Awards.fate_of(s3, "SUNRISE") == "tucked in" \
+		and Awards.fate_of(bare, "SUNRISE") == "survived till sunrise"
+	var awards_ok := aw_falls and aw_loud and aw_resc and aw_lore and aw_quiet \
+		and aw_first and aw_omit and aw_fate
+	print("[SELFTEST] awards: tie-by-pid=%s loud=%s rescue=%s lore=%s quiet=%s first=%s omit-unearned=%s fates=%s -> %s" % [
+		aw_falls, aw_loud, aw_resc, aw_lore, aw_quiet, aw_first, aw_omit, aw_fate, awards_ok])
+	pass_all = pass_all and awards_ok
+
+	# 18. COCOONED SPECTATOR CAM. Opt-in only, and never available to a live player
+	# (watching through a teammate's eyes mid-round would be an information exploit).
+	_apply_phase(Phase.ROUND, {})
+	var ghost := _spawn_remote_bag(4242)
+	ghost.set_meta("cocooned", false)
+	_player.rescue()                                  # alive: must NOT be able to spectate
+	var spec_blocked := not _can_spectate()
+	_cocoon_local()                                   # now cocooned
+	var spec_allowed := _can_spectate()
+	_toggle_spectate()
+	var spec_on: bool = _spectating == 4242 and _spectate_target() == ghost
+	_toggle_spectate()
+	var spec_off: bool = _spectating == -1
+	_toggle_spectate()                                # on again, then get rescued
+	_player.rescue()
+	var spec_auto_off: bool = _spectate_target() == null and _spectating == -1
+	VoiceManager.unregister_player(4242)
+	ghost.queue_free()
+	_remote_bags.erase(4242)
+	_ghost_targets.erase(4242)
+	_ghost_eyes.erase(4242)
+	_ghost_mood.erase(4242)
+	var spec_ok := spec_blocked and spec_allowed and spec_on and spec_off and spec_auto_off
+	print("[SELFTEST] spectate: blocked-while-alive=%s allowed-when-cocooned=%s on=%s off=%s auto-off-on-rescue=%s -> %s" % [
+		spec_blocked, spec_allowed, spec_on, spec_off, spec_auto_off, spec_ok])
+	pass_all = pass_all and spec_ok
 
 	# Hand the player's real save back, untouched by any of the above.
 	Scrapbook.use_test_path("")
@@ -1122,10 +1198,50 @@ func _net_phase(p: int, data: Dictionary) -> void:
 func _host_end_round(outcome: String) -> void:
 	if phase != Phase.ROUND:
 		return
-	var stats := {"outcome": outcome, "time": _round_elapsed, "tumbles": _collect_tumbles()}
+	var stats := {"outcome": outcome, "time": _round_elapsed, "tumbles": _collect_tumbles(),
+		"stats": _finalize_stats(), "names": _roster_names()}
 	_apply_phase(Phase.RESULTS, stats)
 	if _net_connected():
 		_net_phase.rpc(Phase.RESULTS, stats)
+
+# ── Round stats (host) ─────────────────────────────────────────────────────
+
+## Bank MY row into career totals, exactly once per round.
+var _career_banked: bool = false
+
+func _bank_career_stats(stats: Dictionary) -> void:
+	if _career_banked:
+		return
+	_career_banked = true
+	var mine: Dictionary = stats.get(_my_id(), {})
+	if mine.is_empty():
+		return
+	Scrapbook.add_career(int(mine.get("tumbles", 0)), int(mine.get("rescues", 0)),
+		int(mine.get("fragments", 0)))
+
+## Real names for the recap — peer IDs are not screenshot-bait.
+func _roster_names() -> Dictionary:
+	var out := {}
+	for pid: int in _round_stats:
+		out[pid] = str(LobbyManager.players.get(pid, {}).get("name", "Player %d" % pid))
+	return out
+
+func _stat(pid: int) -> Dictionary:
+	if not _round_stats.has(pid):
+		_round_stats[pid] = Awards.blank_stats()
+	return _round_stats[pid]
+
+func _bump(pid: int, key: String, amount: float = 1.0) -> void:
+	if not _is_authority():
+		return
+	var s := _stat(pid)
+	s[key] = s.get(key, 0) + (amount if key == "noise_total" else int(amount))
+
+## Merge live tumble counts (they ride the bag-state RPC) into the stat block.
+func _finalize_stats() -> Dictionary:
+	for pid: int in _collect_tumbles():
+		_stat(pid)["tumbles"] = _collect_tumbles()[pid]
+	return _round_stats
 
 func _collect_tumbles() -> Dictionary:
 	var out := {}
@@ -1141,12 +1257,24 @@ func _show_results(data: Dictionary) -> void:
 		"SUNRISE": "SUNRISE. It had to leave. You made it.",
 		"LOSS": "ALL TUCKED IN. The house is quiet now.",
 	}.get(outcome, outcome)
-	var text: String = headline + "\n\nnight lasted %d:%02d\n\n" % [
+	# The recap is the shareable artifact that ends the session, so: real names,
+	# what happened to each person, and only awards somebody actually earned.
+	var stats: Dictionary = data.get("stats", {})
+	var names: Dictionary = data.get("names", {})
+	var text: String = headline + "\n     the night lasted %d:%02d\n\n" % [
 		int(data.get("time", 0.0)) / 60, int(data.get("time", 0.0)) % 60]
-	var tumbles: Dictionary = data.get("tumbles", {})
-	for pid: int in tumbles:
-		text += "player %d — %d tumbles\n" % [pid, tumbles[pid]]
-	text += "\nhost presses ENTER to return to the lobby"
+	for pid: int in stats:
+		text += "   %s — %s\n" % [
+			names.get(pid, "Player %d" % pid),
+			Awards.fate_of(stats[pid], outcome)]
+	var earned: Array = Awards.compute(stats)
+	if not earned.is_empty():
+		text += "\n─────────  AWARDS  ─────────\n"
+		for a: Dictionary in earned:
+			text += "   %s — %s\n      %s\n" % [
+				a["title"], names.get(a["pid"], "Player %d" % a["pid"]), a["blurb"]]
+	_bank_career_stats(stats)
+	text += "\nhost presses ENTER to run it back"
 	_results_label.text = text
 	_results_overlay.visible = true
 	_cocoon_overlay.visible = false
@@ -1193,6 +1321,10 @@ func _update_outro(delta: float) -> void:
 # ── Objectives (data-driven; complete any 3 to arm escape) ─────────────────
 
 func _setup_objectives(data: Dictionary) -> void:
+	_round_stats.clear()      # fresh scorecard every round
+	_cocoon_counter = 0
+	_career_banked = false
+	_spectating = -1
 	_unzip_target = null  # old objectives are about to be freed
 	_clear_objectives()
 	_done_ids.clear()
@@ -1284,6 +1416,7 @@ func _authoritative_collect_fragment(id: String, by_pid: int) -> void:
 	if id == "" or _frag_collected_ids.has(id):
 		return  # first grab in the lobby wins; ignore the rest
 	_frag_collected_ids.append(id)
+	_bump(by_pid, "fragments")
 	_apply_fragment_collected(id, by_pid)
 	if _net_connected():
 		_net_fragment_collected.rpc(id, by_pid)
@@ -1460,6 +1593,7 @@ func _player_at_exit() -> String:
 func _net_report_escape(pid: int) -> void:
 	if _is_authority() and phase == Phase.ROUND and _escape_armed:
 		print("[NETTEST] escape by peer %d" % pid)
+		_stat(pid)["escaped"] = true
 		_host_end_round("ESCAPE")
 
 # ── Cocoon & rescue ────────────────────────────────────────────────────────
@@ -1467,13 +1601,24 @@ func _net_report_escape(pid: int) -> void:
 func _on_monster_lunged_hit(target: Node3D) -> void:
 	# Host only (the monster simulates on the host).
 	if target == _player:
+		_mark_cocooned_stat(_my_id())
 		_cocoon_local()
 	else:
 		for pid: int in _remote_bags:
 			if _remote_bags[pid] == target:
 				target.set_meta("cocooned", true)
+				_mark_cocooned_stat(pid)
 				_net_cocoon.rpc_id(pid)
 				break
+
+## Ordinal, not a count — FIRST TUCKED IN needs to know who the Housesitter got first.
+func _mark_cocooned_stat(pid: int) -> void:
+	if not _is_authority():
+		return
+	var s := _stat(pid)
+	if int(s.get("cocooned_order", -1)) < 0:
+		s["cocooned_order"] = _cocoon_counter
+		_cocoon_counter += 1
 
 @rpc("authority", "call_remote", "reliable")
 func _net_cocoon() -> void:
@@ -1513,6 +1658,15 @@ func _apply_rescue(victim_pid: int) -> void:
 	elif _remote_bags.has(victim_pid):
 		_remote_bags[victim_pid].set_meta("cocooned", false)
 
+## Rescues are performed locally by the rescuer, so the host is told who did it.
+@rpc("any_peer", "call_remote", "reliable")
+func _report_rescue(pid: int) -> void:
+	_credit_rescue(pid)
+
+func _credit_rescue(pid: int) -> void:
+	if _is_authority():
+		_bump(pid, "rescues")
+
 func _update_rescue(delta: float) -> void:
 	# Find a cocooned bag in reach (you can't rescue yourself).
 	var candidate: Node3D = null
@@ -1543,8 +1697,10 @@ func _update_rescue(delta: float) -> void:
 		if _rescue_t >= rescue_time:
 			_rescue_t = 0.0
 			_apply_rescue(candidate_pid)
+			_credit_rescue(_my_id())        # I did the unzipping
 			if _net_connected():
 				_net_rescued.rpc(candidate_pid)
+				_report_rescue.rpc_id(1, _my_id())
 	else:
 		_rescue_t = 0.0
 		_prompt_label.text = "HOLD E TO RESCUE"
@@ -1630,6 +1786,12 @@ func _unhandled_input(event: InputEvent) -> void:
 				# Flip push-to-talk <-> open mic mid-round (persists).
 				VoiceManager.toggle_open_mic()
 				_show_toast("MIC: %s" % VoiceManager.mic_mode_text(), 2.0)
+			KEY_TAB:
+				_toggle_spectate()
+			KEY_BRACKETLEFT:
+				_cycle_spectate(-1)
+			KEY_BRACKETRIGHT:
+				_cycle_spectate(1)
 			_:
 				var digit := _keycode_to_digit(event.keycode)
 				if digit != -1:
@@ -1946,6 +2108,62 @@ func _reset_cocoon_ui() -> void:
 	if _breathing and _breathing.playing:
 		_breathing.stop()
 
+# ── Cocooned spectator cam ─────────────────────────────────────────────────
+
+## Only while cocooned — a live player watching through someone else's eyes would
+## be an information exploit; a cocooned one is out of the round anyway.
+func _can_spectate() -> bool:
+	return _player.state == SleepingBagPlayer.State.COCOONED and not _spectatable().is_empty()
+
+func _spectatable() -> Array[int]:
+	var out: Array[int] = []
+	for pid: int in _remote_bags:
+		if not bool(_remote_bags[pid].get_meta("cocooned", false)):
+			out.append(pid)
+	out.sort()
+	return out
+
+func _toggle_spectate() -> void:
+	if _spectating != -1:
+		_stop_spectating()
+		return
+	if not _can_spectate():
+		return
+	_spectating = _spectatable()[0]
+	_show_toast("SPECTATING %s   ([ ] to cycle, TAB to return)" % _spectate_name(), 3.0)
+
+func _cycle_spectate(dir: int) -> void:
+	if _spectating == -1:
+		return
+	var list := _spectatable()
+	if list.is_empty():
+		_stop_spectating()
+		return
+	var i := list.find(_spectating)
+	_spectating = list[(maxi(i, 0) + dir + list.size()) % list.size()]
+	_show_toast("SPECTATING %s" % _spectate_name(), 2.0)
+
+func _stop_spectating() -> void:
+	if _spectating == -1:
+		return
+	_spectating = -1
+	_show_toast("back in the bag.", 2.0)
+
+func _spectate_name() -> String:
+	return str(LobbyManager.players.get(_spectating, {}).get("name", "Player %d" % _spectating))
+
+## The bag you're watching, or null to watch yourself.
+func _spectate_target() -> Node3D:
+	if _spectating == -1:
+		return null
+	# Rescued / vanished / gone home: fall back to your own view.
+	if not _remote_bags.has(_spectating) \
+			or bool(_remote_bags[_spectating].get_meta("cocooned", false)) \
+			or _player.state != SleepingBagPlayer.State.COCOONED:
+		_stop_spectating()
+		return null
+	return _remote_bags[_spectating]
+
 func _update_camera(delta: float) -> void:
 	var cocooned := _player.state == SleepingBagPlayer.State.COCOONED
 	# Look-back over the shoulder (hold Q). In the bag it's INSTANT (snap 180°,
@@ -1958,13 +2176,21 @@ func _update_camera(delta: float) -> void:
 	# Cocoon snap: the chase cam is killed INSTANTLY (no ease) and the camera is
 	# pulled inside the bag so the fabric-dark overlay fills the screen. Snapped in
 	# _cocoon_local; here we just hold it and ease back OUT on rescue.
-	if cocooned:
+	# Spectating a teammate (cocooned + TAB): normal chase cam on THEIR bag, and the
+	# fabric-dark overlay lifts so you can actually watch.
+	var watch := _spectate_target()
+	if watch != null:
+		_cocoon_cam = 0.0
+		_cocoon_overlay.visible = false
+	elif cocooned:
 		_cocoon_cam = 1.0
+		_cocoon_overlay.visible = true
 	else:
 		_cocoon_cam = move_toward(_cocoon_cam, 0.0, delta * 4.0)
 	_spring.spring_length = lerpf(cam_distance, 0.12, _cocoon_cam)
 	var h := lerpf(cam_height, 0.35, _cocoon_cam)
-	var target := _player.global_position + Vector3.UP * h
+	var follow: Vector3 = watch.global_position if watch != null else _player.global_position
+	var target := follow + Vector3.UP * h
 	_cam_pivot.global_position = _cam_pivot.global_position.lerp(
 		target, clampf(12.0 * delta, 0.0, 1.0))
 	_cam_pivot.rotation.y = _yaw + _lookback * PI
@@ -2049,12 +2275,23 @@ func _net_monster_state(pos: Vector3) -> void:
 
 @rpc("any_peer", "call_remote", "reliable")
 func _net_noise(pos: Vector3, loudness: float) -> void:
-	print("[NETTEST] noise received from peer %d" % multiplayer.get_remote_sender_id())
+	var from := multiplayer.get_remote_sender_id()
+	print("[NETTEST] noise received from peer %d" % from)
+	_credit_noise(from, loudness)
 	NoiseBus.emit_noise(pos, loudness)
 
 func _on_local_noise(pos: Vector3, loudness: float) -> void:
+	_credit_noise(_my_id(), loudness)   # host counts its own racket too
 	if _net_connected() and not multiplayer.is_server():
 		_net_noise.rpc_id(1, pos, loudness)
+
+## Only count noise DURING the round — lobby thumps and respawn settles aren't
+## anyone's fault, and they'd hand out a bogus "Loudest Zipper".
+func _credit_noise(pid: int, loudness: float) -> void:
+	if not _is_authority() or phase != Phase.ROUND:
+		return
+	_bump(pid, "noise_total", loudness)
+	_bump(pid, "noise_pings")
 
 ## Called by AppRoot once the lobby's START loads this scene on every peer.
 ## The multiplayer peer already exists; here we take our network role and,

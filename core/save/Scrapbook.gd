@@ -35,6 +35,20 @@ var seen_outro: bool = false
 # have to re-pick every launch is a mic mode you'll end up hating.
 var voice_enabled: bool = true
 var voice_open_mic: bool = false    ## false = push-to-talk
+# Career totals — the recap's "identity investment" hook: a number that only goes up
+# is what makes "run it back" stick.
+var career_rounds: int = 0
+var career_tumbles: int = 0
+var career_rescues: int = 0
+var career_fragments: int = 0
+
+## Bank one round's personal stats. Called once per round-end, host or client.
+func add_career(tumbles: int, rescues: int, fragments: int) -> void:
+	career_rounds += 1
+	career_tumbles += tumbles
+	career_rescues += rescues
+	career_fragments += fragments
+	save_game()
 
 func _ready() -> void:
 	load_game()
@@ -132,6 +146,10 @@ func _to_dict() -> Dictionary:
 		"seen_outro": seen_outro,
 		"voice_enabled": voice_enabled,
 		"voice_open_mic": voice_open_mic,
+		"career_rounds": career_rounds,
+		"career_tumbles": career_tumbles,
+		"career_rescues": career_rescues,
+		"career_fragments": career_fragments,
 	}
 
 func _from_dict(d: Dictionary) -> void:
@@ -144,6 +162,10 @@ func _from_dict(d: Dictionary) -> void:
 	seen_outro = bool(d.get("seen_outro", false))
 	voice_enabled = bool(d.get("voice_enabled", true))
 	voice_open_mic = bool(d.get("voice_open_mic", false))
+	career_rounds = int(d.get("career_rounds", 0))
+	career_tumbles = int(d.get("career_tumbles", 0))
+	career_rescues = int(d.get("career_rescues", 0))
+	career_fragments = int(d.get("career_fragments", 0))
 
 func save_game() -> void:
 	var bytes := JSON.stringify(_to_dict()).to_utf8_buffer()
