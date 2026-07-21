@@ -390,6 +390,26 @@ func _run_selftest() -> void:
 		rx_ok, talk_on, talk_off, voice_clean, VoiceManager.stat_frames_pushed])
 	pass_all = pass_all and rx_ok and talk_on and talk_off and voice_clean
 
+	# 15. VOICE OCCLUSION. Voice must NOT carry cleanly through geometry — floors are
+	# only 3m apart and voice_range is 14, so without this the basement is "3m away"
+	# and reads as standing next to you, which kills the dread floor's isolation.
+	var ear := HouseSuburban.scaled(Vector3(1.25, 0.9, 2.5))       # hall, ground floor
+	var below := HouseSuburban.scaled(Vector3(-1.0, -2.4, -2.0))   # basement rec area
+	var same_room := HouseSuburban.scaled(Vector3(-5.0, 0.9, 3.5)) # living room, open floor
+	var ear2 := HouseSuburban.scaled(Vector3(-6.5, 0.9, 2.0))      # living room, same space
+	var thru_floor := VoiceManager.is_occluded_between(ear, below)
+	var open_room := VoiceManager.is_occluded_between(ear2, same_room)
+	# Down the open stairwell shaft (just inside the basement door -> partway down the
+	# flight): reported, not asserted — the shaft is full of treads, so whether it's a
+	# clear shout is an emergent property of the geometry, not a promise.
+	var shaft_top := HouseSuburban.scaled(Vector3(-0.25, 0.9, 4.6))
+	var shaft_mid := HouseSuburban.scaled(Vector3(-0.25, -0.6, 2.2))  # head height ABOVE tread 5 (y-1.5)
+	var shaft_clear := not VoiceManager.is_occluded_between(shaft_top, shaft_mid)
+	var occl_ok := thru_floor and not open_room
+	print("[SELFTEST] voice-occlusion: through-floor-blocked=%s same-room-clear=%s stairwell-clear=%s -> %s" % [
+		thru_floor, not open_room, shaft_clear, occl_ok])
+	pass_all = pass_all and occl_ok
+
 	print("[SELFTEST] RESULT: %s" % ("ALL PASS" if pass_all else "FAIL"))
 	get_tree().quit(0 if pass_all else 1)
 

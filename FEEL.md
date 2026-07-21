@@ -302,6 +302,21 @@ s16 tone packets down the identical path, so transport is provable headlessly.
 - **Cocoon muffle**: a cocooned speaker's player is routed to the `InBag` 600 Hz
   low-pass bus — voice through fabric (flag-edge detected in `_net_bag_state`).
 - HUD: "V talk" in the controls line + a green "🗣 name, name" row while peers speak.
+- **Occlusion — walls and floors muffle voice, they never mute it.** `AudioStreamPlayer3D`
+  is pure distance, so without this a basement player is "3 m away" (floors are 3 m apart,
+  range is 14) and reads as standing next to you — which would gut the dread floor's
+  isolation. A throttled LOS raycast (`OCCLUSION_INTERVAL` 0.15 s, mask 1 = slabs+walls,
+  same pattern as `Monster._los_to`) runs **only for peers currently talking**; blocked →
+  routed to the `VoiceOccluded` bus (low-pass `OCCLUDED_CUTOFF` 1400 Hz, `OCCLUDED_DB` −6).
+  Muffled-through-the-floorboards is *good* horror; crystal-clear is the bug.
+- **Bus priority** (a speaker can be both cocooned and behind a wall): cocooned `InBag`
+  (600 Hz, fabric) **>** occluded `VoiceOccluded` (1400 Hz, wall) **>** `Master`. Resolved
+  in one place (`_apply_bus`) so the two can't fight.
+- **Emergent: the stairwell is a voice channel.** The shaft is open top-to-bottom, so a
+  player *standing on the stairs* has clear line of sight up/down it — verified at head
+  height (a probe placed at tread level reads blocked, because it's inside the step). Not
+  special-cased; it falls out of the geometry. Shouting down the stairwell works; talking
+  through a floor doesn't.
 - **Design law: the monster NEVER hears voice.** Talking is the co-op glue and must
   always feel safe; hops/zippers are the noise economy, not your friends.
 - Verified: selftest group `voice` (rx counting, speak-on/off, unregister-clean,

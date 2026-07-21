@@ -23,6 +23,13 @@ const TONE_INTERVAL := 0.1       ## test mode: synthetic packet cadence
 const TONE_HZ := 440.0
 const RAW_RATE := 24000          ## sample rate for raw (non-Steam) test packets
 
+# Occlusion: voice through a wall/floor is MUFFLED, never muted — hearing a friend's
+# panic through the floorboards is the good version of this. Only the clarity is wrong.
+const OCCLUDED_BUS := "VoiceOccluded"
+const OCCLUDED_CUTOFF := 1400.0  ## Hz — "through a wall" (InBag's 600Hz is "inside a bag")
+const OCCLUDED_DB := -6.0
+const OCCLUSION_INTERVAL := 0.15 ## secs between LOS checks (only for peers actually talking)
+
 var enabled: bool = true         ## settings master switch
 var open_mic: bool = false       ## false = push-to-talk (V)
 var voice_range: float = 14.0    ## AudioStreamPlayer3D max_distance (set by Main)
@@ -40,15 +47,79 @@ var _tone_phase: float = 0.0
 var _players: Dictionary = {}    ## pid -> AudioStreamPlayer3D
 var _playbacks: Dictionary = {}  ## pid -> AudioStreamGeneratorPlayback (may be null headless)
 var _speak_t: Dictionary = {}    ## pid -> countdown until "stopped talking"
+var _cocooned: Dictionary = {}   ## pid -> bool (zipped in: the tightest muffle)
+var _occluded: Dictionary = {}   ## pid -> bool (no line of sight: wall/floor between us)
+var _occl_cd: float = 0.0
+
+func _ready() -> void:
+	_ensure_occluded_bus()
 
 func _process(delta: float) -> void:
 	_update_capture(delta)
+	_update_occlusion(delta)
 	# Tick down speaking indicators.
 	for pid: int in _speak_t.keys():
 		_speak_t[pid] -= delta
 		if _speak_t[pid] <= 0.0:
 			_speak_t.erase(pid)
 			speaking_changed.emit(pid, false)
+
+# ── Occlusion: walls and floors muffle voice ───────────────────────────────
+
+func _ensure_occluded_bus() -> void:
+	if AudioServer.get_bus_index(OCCLUDED_BUS) != -1:
+		return
+	var idx := AudioServer.get_bus_count()
+	AudioServer.add_bus(idx)
+	AudioServer.set_bus_name(idx, OCCLUDED_BUS)
+	AudioServer.set_bus_send(idx, "Master")
+	AudioServer.set_bus_volume_db(idx, OCCLUDED_DB)
+	var lp := AudioEffectLowPassFilter.new()
+	lp.cutoff_hz = OCCLUDED_CUTOFF
+	AudioServer.add_bus_effect(idx, lp)
+
+## True when world geometry (mask 1 = slabs + walls) sits between the two points.
+## Same raycast pattern the monster uses for sight (Monster._los_to).
+func is_occluded_between(from: Vector3, to: Vector3) -> bool:
+	var world := get_viewport().world_3d if get_viewport() != null else null
+	if world == null:
+		return false
+	var q := PhysicsRayQueryParameters3D.create(from, to, 1)
+	return not world.direct_space_state.intersect_ray(q).is_empty()
+
+## Re-check line of sight to whoever is actually TALKING (throttled — at most a
+## handful of rays a second, and only while someone speaks).
+func _update_occlusion(delta: float) -> void:
+	_occl_cd -= delta
+	if _occl_cd > 0.0:
+		return
+	_occl_cd = OCCLUSION_INTERVAL
+	var cam := get_viewport().get_camera_3d() if get_viewport() != null else null
+	if cam == null:
+		return  # menu / headless: nothing to listen from
+	var ear := cam.global_position
+	for pid: int in _players:
+		if not _speak_t.has(pid):
+			continue
+		var p: AudioStreamPlayer3D = _players[pid]
+		if not is_instance_valid(p):
+			continue
+		var blocked := is_occluded_between(ear, p.global_position)
+		if blocked != bool(_occluded.get(pid, false)):
+			_occluded[pid] = blocked
+			_apply_bus(pid)
+
+## Fabric beats walls: a cocooned speaker always gets the tightest muffle.
+func _apply_bus(pid: int) -> void:
+	var p: AudioStreamPlayer3D = _players.get(pid)
+	if p == null or not is_instance_valid(p):
+		return
+	if bool(_cocooned.get(pid, false)):
+		p.bus = "InBag"
+	elif bool(_occluded.get(pid, false)):
+		p.bus = OCCLUDED_BUS
+	else:
+		p.bus = "Master"
 
 # ── Capture / send ─────────────────────────────────────────────────────────
 
@@ -155,6 +226,8 @@ func unregister_player(pid: int) -> void:
 			p.queue_free()
 		_players.erase(pid)
 		_playbacks.erase(pid)
+	_cocooned.erase(pid)
+	_occluded.erase(pid)
 	if _speak_t.has(pid):
 		_speak_t.erase(pid)
 		speaking_changed.emit(pid, false)
@@ -164,10 +237,10 @@ func unregister_all() -> void:
 		unregister_player(pid)
 
 ## Cocooned speaker -> route through the InBag low-pass (voice through fabric).
+## Resolved against occlusion by _apply_bus, so the two can't fight each other.
 func set_muffled(pid: int, muffled: bool) -> void:
-	var p: AudioStreamPlayer3D = _players.get(pid)
-	if p != null and is_instance_valid(p):
-		p.bus = "InBag" if muffled else "Master"
+	_cocooned[pid] = muffled
+	_apply_bus(pid)
 
 func is_speaking(pid: int) -> bool:
 	return _speak_t.has(pid)
