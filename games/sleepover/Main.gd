@@ -416,16 +416,21 @@ func _floor_under_world(space: PhysicsDirectSpaceState3D, w: Vector3, floor_y: f
 func _probe_basement_walkable() -> bool:
 	var space := get_world_3d().direct_space_state
 	var s := HouseSuburban.S
-	var xw := 6.25 * s   # plan x of the garage down-stairs
+	var xw := -0.25 * s   # plan x of the shaft (basement flight under the up-stairs)
 	var prev_y := 0.5
 	var gaps := 0
 	var cliffs := 0
 	var deepest := 0.0
-	# Sample straight down the descending run (plan z 0.1..4.7, inside the hole).
+	# Walk the descending run in travel order: it starts at the DOOR (plan z~5) and
+	# descends northward to z~0, so sample z from high to low.
+	# The flights are STACKED (up-stairs sit 3m directly above), so each ray must
+	# start BELOW the upper flight or it just hits that instead. Expected basement
+	# height at plan z: tread i = 2*(5-z)-0.5, y = -0.3*i.
 	for i in range(0, 11):
-		var zp := lerpf(0.1, 4.7, float(i) / 10.0)
-		var from := Vector3(xw, 1.6, zp * s)
-		var to := Vector3(xw, -4.0, zp * s)
+		var zp := lerpf(4.9, 0.1, float(i) / 10.0)
+		var want_y := -0.3 * (2.0 * (5.0 - zp) - 0.5)
+		var from := Vector3(xw, want_y + 1.2, zp * s)
+		var to := Vector3(xw, want_y - 1.5, zp * s)
 		var q := PhysicsRayQueryParameters3D.create(from, to)
 		q.collision_mask = 0xFFFFFFFF   # treads (layer 1) + player ramp (layer 2)
 		var hit := space.intersect_ray(q)
@@ -439,14 +444,38 @@ func _probe_basement_walkable() -> bool:
 		deepest = minf(deepest, y)
 	# The bottom landing sits under the ground-floor south lip; probe it from just
 	# below that lip so the ground slab doesn't shadow it.
-	var land := HouseSuburban.scaled(Vector3(6.25, -2.7, 5.2))
+	var land := HouseSuburban.scaled(Vector3(-0.25, -2.7, -0.2))
 	var lq := PhysicsRayQueryParameters3D.create(land + Vector3(0, 0.8, 0), land - Vector3(0, 1.0, 0))
 	lq.collision_mask = 0xFFFFFFFF
 	var land_hit := not space.intersect_ray(lq).is_empty()
 	var ok := gaps == 0 and cliffs == 0 and deepest < -2.3 and land_hit
 	print("[SELFTEST] basement-walk: gaps=%d cliffs=%d deepest=%.2f landing=%s -> %s" % [
 		gaps, cliffs, deepest, land_hit, ok])
-	return ok
+	# The UP-flight shares this shaft and the ground floor beneath it is now a hole,
+	# so re-verify it still climbs continuously (tread i = 2z-0.5, y = 0.3*(2z+0.5)).
+	var up_gaps := 0
+	var up_cliffs := 0
+	var up_prev := 0.0
+	var highest := 0.0
+	for i in range(0, 11):
+		var zp := lerpf(0.1, 4.9, float(i) / 10.0)
+		var want_y := 0.3 * (2.0 * zp + 0.5)
+		var q2 := PhysicsRayQueryParameters3D.create(
+			Vector3(xw, want_y + 1.2, zp * s), Vector3(xw, want_y - 1.4, zp * s))
+		q2.collision_mask = 0xFFFFFFFF
+		var h2 := space.intersect_ray(q2)
+		if h2.is_empty():
+			up_gaps += 1
+			continue
+		var y2: float = h2.position.y
+		if absf(up_prev - y2) > 0.55:
+			up_cliffs += 1
+		up_prev = y2
+		highest = maxf(highest, y2)
+	var up_ok := up_gaps == 0 and up_cliffs == 0 and highest > 2.5
+	print("[SELFTEST] upstairs-walk: gaps=%d cliffs=%d highest=%.2f -> %s" % [
+		up_gaps, up_cliffs, highest, up_ok])
+	return ok and up_ok
 
 ## Selftest helper: complete one drawn door-objective, then fill to 3 total, and
 ## return the exit that opened (a door-objective is always in a 5-of-6 draw).
@@ -1961,9 +1990,9 @@ func begin(is_host: bool, is_test: bool, is_spectator: bool = false) -> void:
 # alcove (Breaker anchor) are both navmesh-reachable from the ground floor.
 func _probe_basement_nav() -> void:
 	var map := get_world_3d().navigation_map
-	var from := HouseSuburban.scaled(Vector3(6.5, 0.5, -2.0))  # garage, ground floor
+	var from := HouseSuburban.scaled(Vector3(1.25, 0.5, 2.5))  # hall lane, ground floor
 	var targets := {
-		"rec_room": HouseSuburban.scaled(Vector3(5.0, -2.7, 4.0)),
+		"rec_room": HouseSuburban.scaled(Vector3(-1.0, -2.7, -2.0)),
 		"utility_breaker": HouseSuburban.scaled(HouseSuburban.BREAKER_BOX_SPOT + Vector3(0.6, 0, 0)),
 	}
 	for label: String in targets:

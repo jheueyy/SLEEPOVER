@@ -301,17 +301,36 @@ Everything used to cluster on the ground floor. Now:
   upstairs `y≥2` (attic counts as up).
 
 ## Basement (the dread floor)
-The basement (`y=-3`, `x−4..3, z0..6`) sits **under the central hall** and is
-reached by a **central DOWN-stair right beside the up-stair** — one stairwell,
-up→upstairs and down→basement, off the middle of the house (replaced the old
-hidden garage stairwell that players couldn't find/use). It's an open rec room
-plus a dead-end **utility pocket** (NW) housing the **Breaker** objective. The
-intentionally darkest floor: room lamps below ground use `BASEMENT_LIGHT_ENERGY =
-0.18` (vs `ROOM_LIGHT_ENERGY = 0.7`) with a cold tint. Descent = commit + lose the
-upstairs escapes; the walkout (BASEMENT WINDOW exit, opened by the **Breaker**
-objective) is one of the four escape routes. Monster reaches it via the
-hall↔basement nav link (verified: nav path from the living room to both the rec
-room and the breaker pocket).
+**One stacked stairwell.** The basement flight runs *directly beneath* the up-flight
+in the same shaft (`x−1..0.5, z0..5`), descending the opposite way, so the two stay a
+constant **3 m apart**. The shaft is walled off from the hall's walking lane
+(`x0.5..2`), **open at its north end** (that's the up-stairs mouth) and closed at its
+south end by a wall carrying **the BASEMENT DOOR**, right beside the front entry —
+you go through a *door*, never a hole in the floor.
+
+The basement itself (`y=-3`, `x−8..2, z−6..6` ≈ 14×17 m) is a **gauntlet, not a
+corridor**. Stairs land north-centre; the **WALKOUT** escape is the far **SW**
+(`x=-8` gap at `z4.5`) while the **Breaker** — the objective that *unlocks* that
+walkout — sits in a dead-end pocket in the far **NE** (`x0..2, z−6..−3`). Two
+staggered chokepoints in between: divider `x=-3` (gap at `z1`) is the only way west,
+then divider `z=2` (gap at `x=-7`) is the only way into the SW. So escaping means
+fetching the thing that opens the door and then crossing the whole pitch-black floor
+to reach it.
+
+Intentionally the darkest floor: lamps below ground use `BASEMENT_LIGHT_ENERGY = 0.18`
+(vs `ROOM_LIGHT_ENERGY = 0.7`) with a cold tint. Descent = commit + lose the upstairs
+escapes.
+
+> **Yard-slab rule (do not break this).** The yard safety-slab (`top −0.05`) must
+> always carry a hole matching the basement footprint. It spans the whole map
+> otherwise, and a player stepping into the stairwell lands on *it* at y≈0 instead of
+> descending — the silent bug that made the basement unreachable on foot for several
+> builds. The basement floor is the safety net inside that hole.
+>
+> Regression cover: `Main._probe_basement_walkable` raycasts **both** flights in the
+> shaft (rays must start *below* the upper flight or they just hit it), and
+> `_audit_anchors_on_floor` verifies every spawn/objective/clue anchor stands on solid
+> floor — that one caught a clue spawning inside a staircase.
 
 ## House scale
 `HouseSuburban.S = 1.4` — the whole floor plan is scaled 1.4x at build time

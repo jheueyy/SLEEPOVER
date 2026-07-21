@@ -55,6 +55,12 @@ const WALLS: Array = [
 	{"a": Vector2(-1, -1), "b": Vector2(-1, 6), "base": 0.0, "gaps": [[5.5, DOOR_W]]},     # living|hall, door by the entry
 	{"a": Vector2(2, -1), "b": Vector2(2, 6), "base": 0.0, "gaps": [[0.5, DOOR_W], [4.5, DOOR_W]]},  # hall|laundry, hall|bath
 	{"a": Vector2(2, 2.5), "b": Vector2(5, 2.5), "base": 0.0},                             # laundry|bath divider
+	# Stair shaft (x -1..0.5, z 0..5): holds BOTH flights — the up-stairs above and
+	# the basement stairs directly beneath them. Walled off from the hall's walking
+	# lane; OPEN at its north end (that's the up-stairs mouth) and closed at its
+	# south end by a wall carrying the BASEMENT DOOR, right beside the front entry.
+	{"a": Vector2(0.5, 0), "b": Vector2(0.5, 5), "base": 0.0},                             # shaft | hall lane
+	{"a": Vector2(-1, 5), "b": Vector2(0.5, 5), "base": 0.0, "gaps": [[-0.25, DOOR_W]]},   # THE BASEMENT DOOR
 	# Upper outer shell (garage is single-story: footprint stops at x=5)
 	{"a": Vector2(-8, -6), "b": Vector2(5, -6), "base": 3.0},
 	{"a": Vector2(-8, 6), "b": Vector2(5, 6), "base": 3.0},
@@ -69,15 +75,18 @@ const WALLS: Array = [
 	{"a": Vector2(2, 2), "b": Vector2(5, 2), "base": 3.0},                                 # closet|office divider
 	{"a": Vector2(-3, -6), "b": Vector2(-3, -1), "base": 3.0},                             # kid1|kid2
 	{"a": Vector2(2, -6), "b": Vector2(2, -1), "base": 3.0},                               # kid2|upbath
-	# Basement — under the garage/pantry (x 2..8, z 0..6). Open rec room + a dead-end
-	# UTILITY/breaker pocket in the NW. The garage down-stairs land in the rec room;
-	# the walkout escape is in the south exterior wall.
-	{"a": Vector2(2, 0), "b": Vector2(8, 0), "base": -3.0},                        # north
-	{"a": Vector2(2, 6), "b": Vector2(8, 6), "base": -3.0, "gaps": [[5, 1.4]]},    # south — walkout exit
-	{"a": Vector2(2, 0), "b": Vector2(2, 6), "base": -3.0},                        # west
-	{"a": Vector2(8, 0), "b": Vector2(8, 6), "base": -3.0},                        # east
-	{"a": Vector2(2, 2), "b": Vector2(4, 2), "base": -3.0, "gaps": [[3, DOOR_W]]}, # utility pocket entrance
-	{"a": Vector2(4, 0), "b": Vector2(4, 2), "base": -3.0},                        # utility pocket east wall (dead-end)
+	# Basement (x -8..2, z -6..6) — a gauntlet, not a corridor. The stairs land
+	# north-centre; the WALKOUT is the far SW and the BREAKER is a dead-end pocket in
+	# the far NE, so you fetch the thing that opens the door and then cross the whole
+	# pitch-black floor to reach it. Two staggered chokepoints in between.
+	{"a": Vector2(-8, -6), "b": Vector2(2, -6), "base": -3.0},                       # north
+	{"a": Vector2(-8, 6), "b": Vector2(2, 6), "base": -3.0},                         # south
+	{"a": Vector2(-8, -6), "b": Vector2(-8, 6), "base": -3.0, "gaps": [[4.5, 1.4]]}, # west — WALKOUT escape
+	{"a": Vector2(2, -6), "b": Vector2(2, 6), "base": -3.0},                         # east
+	{"a": Vector2(-3, -6), "b": Vector2(-3, 6), "base": -3.0, "gaps": [[1, DOOR_W]]},# divider 1: only way west
+	{"a": Vector2(-8, 2), "b": Vector2(-3, 2), "base": -3.0, "gaps": [[-7, DOOR_W]]},# divider 2: only way to the SW walkout
+	{"a": Vector2(0, -3), "b": Vector2(2, -3), "base": -3.0, "gaps": [[1, DOOR_W]]}, # breaker pocket entrance (far NE)
+	{"a": Vector2(0, -6), "b": Vector2(0, -3), "base": -3.0},                        # breaker pocket west wall (dead-end)
 	# Attic (low walls, over the upper back row)
 	{"a": Vector2(-8, -6), "b": Vector2(2, -6), "base": 6.0, "h": 2.2},
 	{"a": Vector2(-8, -1), "b": Vector2(2, -1), "base": 6.0, "h": 2.2},
@@ -94,16 +103,17 @@ const SLABS: Array = [
 	# stairwell lands on IT at y≈0 instead of descending — the bug that made the
 	# basement unreachable on foot for every previous build. The basement floor
 	# (y−3) is the safety net inside that hole.
-	{"rect": [-12.0, -9.0, 2.0, 9.0], "top": -0.05},
-	{"rect": [8.0, -9.0, 12.0, 9.0], "top": -0.05},
-	{"rect": [2.0, -9.0, 8.0, 0.0], "top": -0.05},
-	{"rect": [2.0, 6.0, 8.0, 9.0], "top": -0.05},
-	# Ground floor — solid everywhere except the basement stairwell hole in the
-	# garage (x 5.5..7, z 0..5); flat garage floor surrounds it on all sides.
-	{"rect": [-8.0, -6.0, 5.5, 6.0], "top": 0.0},
-	{"rect": [7.0, -6.0, 8.0, 6.0], "top": 0.0},
-	{"rect": [5.5, -6.0, 7.0, 0.0], "top": 0.0},
-	{"rect": [5.5, 5.0, 7.0, 6.0], "top": 0.0},
+	{"rect": [-12.0, -9.0, -8.0, 9.0], "top": -0.05},
+	{"rect": [2.0, -9.0, 12.0, 9.0], "top": -0.05},
+	{"rect": [-8.0, -9.0, 2.0, -6.0], "top": -0.05},
+	{"rect": [-8.0, 6.0, 2.0, 9.0], "top": -0.05},
+	# Ground floor — solid everywhere except the stair SHAFT (x -1..0.5, z 0..5),
+	# which holds the up-flight above and the basement flight below. The hall keeps
+	# a solid walking lane at x 0.5..2 so you can still pass north-south.
+	{"rect": [-8.0, -6.0, -1.0, 6.0], "top": 0.0},
+	{"rect": [0.5, -6.0, 8.0, 6.0], "top": 0.0},
+	{"rect": [-1.0, -6.0, 0.5, 0.0], "top": 0.0},
+	{"rect": [-1.0, 5.0, 0.5, 6.0], "top": 0.0},
 	# Upper floor — holes: main stairwell x -1..0.5 z 0..5, chute x 3..4 z 1..2
 	{"rect": [-8.0, -6.0, -1.0, 6.0], "top": 3.0},
 	{"rect": [-1.0, -6.0, 0.5, 0.0], "top": 3.0},
@@ -115,10 +125,11 @@ const SLABS: Array = [
 	# Attic floor — hole at x -3..-1.4, z -6..-1 (attic stairwell; step off sideways)
 	{"rect": [-8.0, -6.0, -3.0, -1.0], "top": 6.0},
 	{"rect": [-1.4, -6.0, 2.0, -1.0], "top": 6.0},
-	# Basement floor — under the garage/pantry (x 2..8, z 0..6): open rec room +
-	# a dead-end utility/breaker pocket (NW). The garage down-stairs land in the
-	# rec room; the walkout escape is in the south exterior wall.
-	{"rect": [2.0, 0.0, 8.0, 6.0], "top": -3.0},
+	# Basement floor — the dread floor, under the west+centre of the house
+	# (x -8..2, z -6..6 ≈ 14x17m). Stairs land north-centre; the walkout is the far
+	# SW corner and the Breaker is a dead-end pocket in the far NE, so escaping
+	# means crossing the whole dark floor twice.
+	{"rect": [-8.0, -6.0, 2.0, 6.0], "top": -3.0},
 	# Ceilings — the upper front row and the up-bath have the flat roof at y6;
 	# the attic floor already ceils the back row. Garage gets its own roof.
 	{"rect": [-8.0, -1.0, 5.0, 6.0], "top": 6.0},
@@ -130,7 +141,7 @@ const SLABS: Array = [
 # direction of climb; base = y of the floor you start from; signed rise.
 const STAIRS: Array = [
 	{"start": Vector2(-0.25, 0.0), "dir": Vector2(0, 1), "base": 0.0, "rise": 0.3, "run": 0.5, "steps": 10, "width": 1.5, "to": "UPSTAIRS"},  # hall -> upper (walkway stays beside it)
-	{"start": Vector2(6.25, 0.0), "dir": Vector2(0, 1), "base": 0.0, "rise": -0.3, "run": 0.5, "steps": 10, "width": 1.5, "to": "BASEMENT"}, # garage -> basement: wide, well-lit, with flat garage floor all around the mouth so you can actually reach it
+	{"start": Vector2(-0.25, 5.0), "dir": Vector2(0, -1), "base": 0.0, "rise": -0.3, "run": 0.5, "steps": 10, "width": 1.5, "to": "BASEMENT"}, # basement: runs DIRECTLY UNDER the up-flight in the same lane, descending the opposite way — the two stay a constant 3m apart. Entered by a real DOOR at the shaft's south end (by the front entry), not a hole in the floor.
 	{"start": Vector2(-2.2, -1.0), "dir": Vector2(0, -1), "base": 3.0, "rise": 0.3, "run": 0.5, "steps": 10, "width": 1.8, "to": "ATTIC"}, # kid2 -> attic (wider than its hole: top tread overlaps the attic slab sideways)
 	# NOTE: keep stair run >= 0.5 and width >= 1.5, clear of wall footprints —
 	# narrower/shorter treads voxelize into a disconnected navmesh and the
@@ -147,10 +158,10 @@ const STAIRS: Array = [
 const NAV_LINKS: Array = [
 	# kid2 <-> attic
 	{"from": Vector3(-1.0, 3.3, -3.0), "to": Vector3(-5.0, 6.3, -3.5)},
-	# garage <-> basement (down-stairs; two hops: down the flight, then sideways
-	# onto the rec-room floor)
-	{"from": Vector3(6.25, 0.3, -0.3), "to": Vector3(6.25, -2.7, 5.2)},
-	{"from": Vector3(6.25, -2.7, 5.2), "to": Vector3(5.0, -2.7, 3.0)},
+	# hall shaft <-> basement (the flight under the up-stairs; two hops: down the
+	# flight from just inside the basement door, then out onto the basement floor)
+	{"from": Vector3(-0.25, 0.3, 5.2), "to": Vector3(-0.25, -2.7, -0.2)},
+	{"from": Vector3(-0.25, -2.7, -0.2), "to": Vector3(-1.5, -2.7, -1.5)},
 ]
 
 # Monster patrol loop (plan x/z + REAL y of the floor): a lap through the
@@ -160,7 +171,8 @@ const PATROL_LOOP: Array = [
 	Vector3(-5.5, 0.5, -3.5),   # kitchen
 	Vector3(-4.5, 0.5, 2.5),    # living room
 	Vector3(0.5, 0.5, 4.5),     # hall
-	Vector3(5.0, -2.7, 4.0),    # basement rec room (the hum wanders down there)
+	Vector3(-1.0, -2.7, -2.0),  # basement arrival (the hum wanders down there)
+	Vector3(-6.0, -2.7, 4.0),   # basement SW, by the walkout
 	Vector3(0.5, 3.5, 5.3),     # landing (upstairs)
 	Vector3(-4.5, 3.5, 3.5),    # master bed
 	Vector3(-2.0, 3.5, -0.2),   # corridor
@@ -173,7 +185,7 @@ const HIDE_SPOTS: Array = [
 	Vector3(4.2, 0.0, -5.2),    # pantry corner
 	Vector3(4.2, 3.0, 1.2),     # upstairs linen closet
 	Vector3(-7.2, 3.0, 5.2),    # under the master bed
-	Vector3(7.0, -3.0, 5.0),    # basement rec-room SE corner (clear of the breaker)
+	Vector3(-7.0, -3.0, 0.0),   # basement NW corner (clear of the breaker)
 ]
 
 # ── Objective spots (plan x/z + floor y; host picks one clue spot per round) ──
@@ -183,7 +195,7 @@ const CLUE_SPOTS: Array = [
 	Vector3(1.5, 0.0, 3.0),     # hallway table (ground)
 	Vector3(-4.5, 3.0, 3.5),    # master nightstand (upstairs)
 	Vector3(3.5, 3.0, -3.5),    # up-bath cabinet (upstairs)
-	Vector3(5.0, -3.0, 4.0),    # basement rec-room shelf (basement)
+	Vector3(-6.0, -3.0, 4.0),   # basement, SW near the walkout (basement)
 ]
 const PHONE_SPOT := Vector3(1.7, 0.0, 5.4)  # hall wall by the front door
 
@@ -193,9 +205,9 @@ const BREAKER_DIAGRAM_SPOTS: Array = [
 	Vector3(6.4, 0.0, 1.0),     # laundry (ground)
 	Vector3(-5.0, 3.0, -3.5),   # kid room 1 wall (upstairs)
 	Vector3(0.5, 3.0, 5.0),     # landing (upstairs)
-	Vector3(3.5, -3.0, 4.5),    # basement rec-room west wall (clear of the stairwell)
+	Vector3(-5.0, -3.0, -2.0),  # basement NW storage (basement)
 ]
-const BREAKER_BOX_SPOT := Vector3(2.3, -3.0, 1.0)  # west wall of the basement utility pocket (NW dead-end)
+const BREAKER_BOX_SPOT := Vector3(1.0, -3.0, -4.5)  # far-NE dead-end pocket, opposite the walkout
 
 # The Dog Has The Keys: grab a snack from the pantry, then reach the wandering
 # dog. The dog paces this ground-floor loop.
@@ -214,7 +226,7 @@ const GARAGE_CLUE_SPOTS: Array = [
 	Vector3(-5.5, 0.0, -3.0),   # kitchen calendar (ground)
 	Vector3(-0.5, 3.0, -3.5),   # kid room 2 cake photo (upstairs)
 	Vector3(3.5, 3.0, 4.0),     # office (upstairs)
-	Vector3(7.0, -3.0, 3.0),    # basement rec-room corner (basement)
+	Vector3(1.0, -3.0, 3.0),    # basement east arrival area (basement)
 ]
 const GARAGE_KEYPAD_SPOT := Vector3(6.5, 0.0, 5.3)  # garage door wall
 
@@ -234,7 +246,7 @@ const EXITS: Array = [
 	{"name": "FRONT DOOR", "at": Vector3(0.5, 1.0, 7.4), "half": Vector2(1.2, 1.2), "door": "front_door"},
 	{"name": "BACK DOOR", "at": Vector3(-0.5, 1.0, -6.6), "half": Vector2(1.2, 1.2), "door": "back_door"},
 	{"name": "GARAGE", "at": Vector3(6.5, 1.0, 7.4), "half": Vector2(1.4, 1.2), "door": "garage_door"},
-	{"name": "BASEMENT WINDOW", "at": Vector3(5.0, -2.0, 5.4), "half": Vector2(1.2, 1.2), "door": ""},
+	{"name": "BASEMENT WINDOW", "at": Vector3(-7.4, -2.0, 4.5), "half": Vector2(1.2, 1.2), "door": ""},
 ]
 
 static func exits() -> Array:
@@ -288,7 +300,7 @@ const MONSTER_SPAWN_CANDIDATES: Array = [
 	Vector3(-4.2, 6.4, -4.9),   # attic (far up)
 	Vector3(-6.0, 3.5, -3.5),   # kid room 1 (upstairs far NW)
 	Vector3(3.5, 3.5, 4.0),     # office (upstairs far SE)
-	Vector3(2.5, -3.0, 1.0),    # basement utility (far down)
+	Vector3(-6.5, -3.0, -4.0),  # basement NW (far down)
 	Vector3(-6.5, 0.5, -3.5),   # kitchen (ground far NW)
 	Vector3(6.5, 0.5, -4.0),    # garage (ground far NE, clear of the basement stairs)
 ]
@@ -296,7 +308,7 @@ const MONSTER_SPAWN_CANDIDATES: Array = [
 # Staircase plan positions the monster must NOT spawn on/next to (chokepoints).
 const STAIR_PLAN_POINTS: Array = [
 	Vector2(-0.25, 2.5),   # main up-stairs (hall <-> upstairs)
-	Vector2(6.25, 2.5),    # basement down-stairs (garage <-> basement)
+	Vector2(-0.25, 2.5),   # basement down-stairs (shaft under the up-stairs)
 	Vector2(-2.2, -3.5),   # attic stairs (kid2 <-> attic)
 ]
 
@@ -331,9 +343,10 @@ const ROOMS: Array = [
 	{"name": "KID ROOM 1", "at": Vector3(-5.5, 5.2, -3.5)},
 	{"name": "KID ROOM 2", "at": Vector3(-0.5, 5.2, -3.5)},
 	{"name": "UP BATH", "at": Vector3(3.5, 5.2, -3.5)},
-	{"name": "OPEN REC ROOM", "at": Vector3(5.5, -1.8, 4.0)},
-	{"name": "UTILITY (BREAKER)", "at": Vector3(3.0, -1.8, 1.0)},
-	{"name": "WALKOUT", "at": Vector3(5.0, -1.8, 5.4)},
+	{"name": "OPEN REC ROOM", "at": Vector3(-1.0, -1.8, 2.0)},
+	{"name": "STORAGE", "at": Vector3(-5.5, -1.8, -2.0)},
+	{"name": "UTILITY (BREAKER)", "at": Vector3(1.0, -1.8, -4.5)},
+	{"name": "WALKOUT", "at": Vector3(-6.5, -1.8, 4.5)},
 	{"name": "ATTIC", "at": Vector3(-3.0, 7.4, -3.5)},
 ]
 
