@@ -420,11 +420,37 @@ too fast). Heights stay 1:1, so the scale also made stairs shallower (rise 0.3,
 run 0.7) and doors wider (~1.5m). Raise/lower S to resize the entire house.
 
 ## Stairs & verbs
-Every staircase has an invisible ramp collider (layer 2, players only) so bags
-can SHUFFLE up and down stairs — slowly, thanks to the slope fighting gravity.
-Hopping remains the fast way up; hopping DOWN at speed still tumble-chains.
-The monster ignores the ramps entirely (rays + navmesh masked to layer 1) and
-keeps walking the real treads. Chases continue across floors either way.
+**Stairs must ALWAYS be walkable by shuffle.** This is an economy rule, not a
+convenience: hops are the scarce panic resource, so if a staircase can only be
+climbed by hopping it charges the whole tank as a toll and hops stop being a choice.
+Stairs are a deliberate **slow zone** — slower than flat, always passable.
+
+Three collision layers keep that honest:
+- **layer 1** world (walls, floors, landing pads) — everyone collides.
+- **layer 2** the invisible stair **ramp** — the ONLY stair surface the player touches.
+- **layer 3** (`TREAD_LAYER`) the visible **treads** — deliberately *not* in the
+  player's mask. The bag would otherwise catch on 0.3 m risers and stop dead. Treads
+  stay solid for the navmesh bake and the monster's floor-snap, so the monster still
+  walks the real steps. Player mask is `0b11`; the ground rays use the **same** mask
+  (they defaulted to layer 1 and so never saw the ramp at all — that bug alone made
+  slope detection impossible).
+
+| Constant | Default | What it does |
+|---|---|---|
+| `Player.stair_speed` | 1.25 | m/s cap on a slope — slower than `shuffle_speed` 2.0, on purpose |
+| `Player.stair_min_slope_deg` | 12.0 | steeper ground than this counts as stairs |
+| `Player.stair_grip` | 1.15 | gravity-cancel multiplier; >1 so you hold instead of creeping back |
+| `HouseSuburban.RAMP_LIFT` | 0.05 | ramp sits on the noses, not sunk into them |
+
+On a slope the bag pushes **along the surface** (a horizontal shove wastes itself
+driving into a 23° flight) and gravity's down-slope pull is cancelled every frame —
+which is also what stops you sliding backwards when you let go. Down-flights get an
+extra half-rise of ramp lift because their treads sit at `base+rise*i` while up-flights
+use `i+1`. Hopping is unchanged: still the fast way up, still tumble-chains coming down.
+
+> Regression cover: `_selftest_stairs()` physically shuffles the bag up **every**
+> flight and asserts it gains height, spends **zero stamina**, and doesn't slide back.
+> Before the fix it measured 0.08 / 0.00 / 0.04 m climbed in 4 s; after, 1.97 / 2.41 / 1.96.
 
 ## The speed ladder (keep this ordering true while tuning!)
 ```

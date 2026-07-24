@@ -12,6 +12,14 @@ extends Object
 ## Chute:   closet floor hole -> drops into the laundry room. One-way. Comedy.
 
 const WALL_T := 0.3
+## Stair treads live on their OWN collision layer so the PLAYER never touches them.
+## The player rides only the smooth invisible ramp (layer 2); the treads remain solid
+## for the navmesh bake and the monster's floor-snap, which walk the visible steps.
+## Without this, the capsule catches on 0.3m risers and stairs are unclimbable by
+## shuffle — which forced players to spend their whole hop tank just to change floors.
+const TREAD_LAYER := 4   # collision layer 3
+## Small lift so the ramp reads as sitting on the step noses rather than inside them.
+const RAMP_LIFT := 0.05
 const WALL_H := 3.0
 const DOOR_H := 2.0
 const DOOR_W := 1.1  # pre-scale; S widens doors along with everything else
@@ -564,7 +572,7 @@ static func _build_stairs(parent: Node3D, stair: Dictionary) -> void:
 			Vector3(width if absf(dir.y) > 0.5 else length,
 				0.3,
 				length if absf(dir.y) > 0.5 else width),
-			COL_STEP_A if i % 2 == 0 else COL_STEP_B)
+			COL_STEP_A if i % 2 == 0 else COL_STEP_B, false, TREAD_LAYER)
 
 	# Invisible ramp over the treads so bags can SHUFFLE up and down stairs —
 	# hopping stays the fast option, but a chase no longer dies at the bottom
@@ -591,7 +599,20 @@ static func _build_stairs(parent: Node3D, stair: Dictionary) -> void:
 	rshape.shape = rbox
 	ramp.add_child(rshape)
 	parent.add_child(ramp)
-	var center := (bottom + top_end) * 0.5 - Vector3.UP * 0.06
+	# Ride slightly ABOVE the step-nose line. The player collides with the treads too
+	# (mask includes the world layer), so a ramp flush with the noses lets the capsule
+	# swing into a 0.3m riser and stop dead — the "can't climb" half of the stairs
+	# problem. Lifting it gives the bag clearance over every riser.
+	#
+	# Descending flights need an extra half-rise: their treads sit at base+rise*i while
+	# ascending ones sit at base+rise*(i+1), so the same endpoints leave a DOWN ramp
+	# half a step BELOW its own tread tops — the bag then rides the steps, not the ramp,
+	# and can't climb at all (measured: 0.04m in 4s vs 1.97m on an up-flight).
+	# Down-flights lay their treads at base+rise*i (up-flights use i+1), so the same
+	# endpoints leave a down ramp half a step below its own tread tops. Correct it so
+	# the ramp visually sits on the steps rather than sunk into them.
+	var lift := RAMP_LIFT + (absf(rise) * 0.5 if rise < 0.0 else 0.0)
+	var center := (bottom + top_end) * 0.5 + Vector3.UP * lift
 	ramp.look_at_from_position(center, top_end, Vector3.UP)
 
 	# Flat landing pads at both floor ends, flush with the floors and touching
@@ -634,9 +655,10 @@ static func _build_stairs(parent: Node3D, stair: Dictionary) -> void:
 		parent.add_child(lamp)
 
 static func _box(parent: Node3D, center: Vector3, size: Vector3,
-		color: Color, unshaded: bool = false) -> void:
+		color: Color, unshaded: bool = false, layer: int = 1) -> void:
 	var body := StaticBody3D.new()
 	body.position = center
+	body.collision_layer = layer
 
 	var shape := CollisionShape3D.new()
 	var box := BoxShape3D.new()

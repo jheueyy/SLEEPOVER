@@ -506,6 +506,13 @@ func _run_selftest() -> void:
 		spec_blocked, spec_allowed, spec_on, spec_off, spec_auto_off, spec_ok])
 	pass_all = pass_all and spec_ok
 
+	# 19. STAIRS ARE WALKABLE (real physics, no hops). THE regression test for the
+	# playtest report "had to use all jumps to get up the stairs". A shuffling bag must
+	# gain height on every flight while spending ZERO stamina, and must not slide back
+	# down when you stop pushing.
+	var stairs_ok := await _selftest_stairs()
+	pass_all = pass_all and stairs_ok
+
 	# Hand the player's real save back, untouched by any of the above.
 	Scrapbook.use_test_path("")
 	Scrapbook.load_game()
@@ -627,6 +634,66 @@ func _probe_basement_walkable() -> bool:
 	print("[SELFTEST] upstairs-walk: gaps=%d cliffs=%d highest=%.2f -> %s" % [
 		up_gaps, up_cliffs, highest, up_ok])
 	return ok and up_ok
+
+## Walk the bag UP every staircase using only shuffle (never a hop) and assert it
+## actually climbs, stays slower than flat ground, and holds position when you stop.
+func _selftest_stairs() -> bool:
+	var s := HouseSuburban.S
+	var all_ok := true
+	var report: Array[String] = []
+	for st: Dictionary in HouseSuburban.STAIRS:
+		var start := Vector3(st["start"].x * s, st["base"], st["start"].y * s)
+		var d := Vector3(st["dir"].x, 0.0, st["dir"].y)
+		var run := float(st["run"]) * s
+		var steps := int(st["steps"])
+		var rise := float(st["rise"])
+		# Always test the CLIMB, so for a descending flight start at its bottom.
+		var bottom := start
+		var up_dir := d
+		if rise < 0.0:
+			bottom = start + d * (run * steps)
+			bottom.y = float(st["base"]) + rise * steps
+			up_dir = -d
+		# Drop in ON the flight, a step or so up, at the tread height for that point —
+		# placing it *before* the flight can start it on the far side of a doorway wall,
+		# and a flat offset buries it inside a tread.
+		var along_t := 1.0
+		# Drop well clear of the ramp: a down-flight's ramp is lifted an extra half-rise,
+		# so a small offset spawns the capsule UNDERNEATH it, wedged on a tread.
+		var drop_y: float = bottom.y + (along_t / run) * absf(rise) + 1.2
+		_player.freeze = false
+		_player.state = SleepingBagPlayer.State.NORMAL
+		_player.linear_velocity = Vector3.ZERO
+		_player.angular_velocity = Vector3.ZERO
+		_player.global_position = Vector3(
+			bottom.x + up_dir.x * along_t, drop_y, bottom.z + up_dir.z * along_t)
+		_player.stamina = _player.stamina_max
+		_player.test_move = Vector3.ZERO
+		for _i in 20:
+			await get_tree().physics_frame
+		var y0: float = _player.global_position.y
+		# Shuffle uphill for ~4s.
+		_player.test_move = up_dir
+		for _i in 240:
+			await get_tree().physics_frame
+		var y1: float = _player.global_position.y
+		# Let go — it must hold, not creep back down.
+		_player.test_move = Vector3.ZERO
+		for _i in 60:
+			await get_tree().physics_frame
+		var y2: float = _player.global_position.y
+		var climbed := y1 - y0
+		var slipped := y1 - y2
+		var hopped: bool = _player.stamina < _player.stamina_max - 0.01
+		var ok := climbed > 0.9 and slipped < 0.25 and not hopped
+		all_ok = all_ok and ok
+		report.append("%s climbed=%.2f slipback=%.2f hops=%s%s" % [
+			st.get("to", "?"), climbed, slipped, "YES" if hopped else "no",
+			"" if ok else "  <-- FAIL"])
+	_player.test_move = Vector3.ZERO
+	print("[SELFTEST] stairs-walkable (no hops): %s -> %s" % [
+		" | ".join(report), all_ok])
+	return all_ok
 
 ## Selftest helper: complete one drawn door-objective, then fill to 3 total, and
 ## return the exit that opened (a door-objective is always in a 5-of-6 draw).

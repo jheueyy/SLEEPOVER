@@ -21,6 +21,17 @@ class_name SleepingBagPlayer
 @export var shuffle_speed: float = 2.0       ## m/s cap — slowed walk, but not boring
 @export var brake_damping: float = 8.0       ## how hard the bag stops with no input (holds on stair ramps)
 
+# ── Stairs ─────────────────────────────────────────────────────────────────
+# Stairs must ALWAYS be walkable. Before this, gravity's down-slope pull (~9.5N on
+# a 23° flight) was never opposed, so climbing meant spending the whole hop tank —
+# which inverted the stamina economy: hops are supposed to be a scarce panic
+# resource, not a staircase toll. Now stairs are a deliberate SLOW ZONE you can
+# always shuffle up, and hopping them is a choice you pay for.
+@export_group("Stairs")
+@export var stair_speed: float = 1.25        ## m/s cap while on a slope — slower than flat on purpose
+@export var stair_min_slope_deg: float = 12.0 ## steeper ground than this counts as stairs
+@export var stair_grip: float = 1.15         ## gravity-cancel multiplier — >1 so you hold, never creep back
+
 # ── Hop & Stamina ──────────────────────────────────────────────────────────
 @export_group("Hop & Stamina")
 @export var hop_speed: float = 3.6           ## forward burst speed of one hop (m/s)
@@ -68,6 +79,9 @@ var _ground_rays: Array[RayCast3D] = []
 var _visual: Node3D
 var _eyes: BagEyes
 var _spawn: Transform3D
+var _ground_normal: Vector3 = Vector3.UP  ## steepest surface under us this frame
+var _on_slope: bool = false               ## standing on stairs/ramp (see stair_min_slope_deg)
+var _gravity: float = 12.0
 
 func _ready() -> void:
 	# Build our own body procedurally so there's no fragile .tscn to hand-author.
@@ -93,12 +107,17 @@ func _ready() -> void:
 		ray.position = Vector3(off.x, 0.0, off.y)
 		ray.target_position = Vector3(0.0, -1.0, 0.0)
 		ray.enabled = true
+		# Must match the body's mask (world + stair ramps). RayCast3D defaults to
+		# layer 1 ONLY, so these never saw the layer-2 stair ramps — which is why
+		# slope detection never fired and stairs were unclimbable by shuffle.
+		ray.collision_mask = 0b11
 		add_child(ray)
 		_ground_rays.append(ray)
 
 	stamina = stamina_max
 	_spawn_grace = 1.0
 	_spawn = global_transform
+	_gravity = float(ProjectSettings.get_setting("physics/3d/default_gravity", 12.0))
 
 # ── Public API used by Main ────────────────────────────────────────────────
 
@@ -185,11 +204,21 @@ func _unhandled_input(event: InputEvent) -> void:
 # ── Physics ────────────────────────────────────────────────────────────────
 
 func _physics_process(delta: float) -> void:
+	# Grounded + the STEEPEST surface under us. The five rays already straddle two
+	# treads when bridging a step, so taking the steepest normal is what reliably
+	# says "you're on a staircase" rather than "one ray happened to find flat".
 	grounded = false
+	_ground_normal = Vector3.UP
+	var steepest := 0.0
 	for ray: RayCast3D in _ground_rays:
 		if ray.is_colliding():
 			grounded = true
-			break
+			var n: Vector3 = ray.get_collision_normal()
+			var a := n.angle_to(Vector3.UP)
+			if a > steepest:
+				steepest = a
+				_ground_normal = n
+	_on_slope = grounded and steepest > deg_to_rad(stair_min_slope_deg)
 
 	# Turn the googly eyes toward the movement heading (local yaw compensates
 	# for whatever the physics body's own yaw is doing).
@@ -233,11 +262,26 @@ func _process_normal(delta: float) -> void:
 	if grounded and _regen_cooldown <= 0.0:
 		stamina = minf(stamina + stamina_regen * delta, stamina_max)
 
+	# On stairs, cancel the down-slope pull of gravity — ALWAYS, input or not. This is
+	# what makes a staircase walkable instead of a hop-toll, and what stops you
+	# creeping backwards down it when you let go.
+	if _on_slope:
+		var g := Vector3.DOWN * _gravity
+		var down_slope := g - _ground_normal * g.dot(_ground_normal)
+		apply_central_force(-down_slope * mass * stair_grip)
+
 	# Shuffle: quiet slowed walk in whatever direction keys are held.
 	var dir := _input_dir()
 	if dir != Vector3.ZERO:
 		facing = dir
-		if _horizontal_speed() < shuffle_speed:
+		if _on_slope:
+			# Push ALONG the stair surface, not into it — a horizontal shove on a 23°
+			# flight wastes most of itself driving you into the slope. Capped slower
+			# than flat ground so stairs read as a deliberate slow zone.
+			var along := (dir - _ground_normal * dir.dot(_ground_normal))
+			if along.length() > 0.01 and _horizontal_speed() < stair_speed:
+				apply_central_force(along.normalized() * shuffle_force)
+		elif _horizontal_speed() < shuffle_speed:
 			apply_central_force(dir * shuffle_force)
 	elif grounded:
 		# No input: brake to a stop so the bag doesn't creep down stair ramps.
@@ -266,7 +310,13 @@ func _process_recovery(_delta: float) -> void:
 
 # ── Verb helpers ───────────────────────────────────────────────────────────
 
+## Test hook: the harness can't press physical keys, so it drives movement through
+## this instead. Zero = read the real keyboard.
+var test_move: Vector3 = Vector3.ZERO
+
 func _input_dir() -> Vector3:
+	if test_move != Vector3.ZERO:
+		return test_move.normalized()
 	var dir := Vector3.ZERO
 	for key: int in DIR_KEYS:
 		if Input.is_key_pressed(key):

@@ -472,7 +472,8 @@ func _physics_process(delta: float) -> void:
 	var space := get_world_3d().direct_space_state
 	if not on_vertical_seg:
 		var query := PhysicsRayQueryParameters3D.create(
-			global_position + Vector3.UP * 1.2, global_position + Vector3.DOWN * 3.0, 1)
+			global_position + Vector3.UP * 1.2, global_position + Vector3.DOWN * 3.0,
+			1 | HouseSuburban.TREAD_LAYER)   # floors + stair treads: it walks the real steps
 		var hit := space.intersect_ray(query)
 		if hit:
 			var floor_y: float = hit["position"].y + 0.4
