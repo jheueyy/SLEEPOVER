@@ -479,6 +479,13 @@ func _physics_process(delta: float) -> void:
 			var floor_y: float = hit["position"].y + 0.4
 			global_position.y = lerpf(global_position.y, floor_y, clampf(14.0 * delta, 0.0, 1.0))
 
+	# Containment. Having no collider is what lets it walk stairs and links
+	# smoothly, but it also means nothing physically stops it leaving the house —
+	# a playtest ended with the Housesitter patrolling the ROOF, which is a round
+	# with no monster in it. Clamp the height every frame; if it has left the
+	# footprint entirely, put it back on the nearest patrol waypoint.
+	_contain()
+
 	# Face where it's going; hunch under low clearance (doorways).
 	if _move_dir.length() > 0.1 and _state != State.INVESTIGATE:
 		var yaw := atan2(-_move_dir.x, -_move_dir.z)
@@ -538,6 +545,25 @@ func _repath(goal: Vector3) -> void:
 
 func _path_exhausted(goal: Vector3) -> bool:
 	return goal.distance_to(_path_goal) < 0.6 and _path_i >= _path.size()
+
+## Keep the Housesitter inside the playable shell. Height is clamped silently
+## (it drifts by a few cm all the time); leaving the footprint is a real fault,
+## so that warps and logs.
+func _contain() -> void:
+	global_position.y = clampf(global_position.y,
+		HouseSuburban.INSIDE_MIN_Y, HouseSuburban.INSIDE_MAX_Y)
+	if HouseSuburban.is_inside(global_position) or patrol_points.is_empty():
+		return
+	var i := _nearest_patrol_index()
+	push_warning("[NETTEST] monster left the house at %v — warped to patrol %d"
+		% [global_position, i])
+	print("[NETTEST] monster OUT OF BOUNDS at %v -> patrol %d" % [global_position, i])
+	global_position = patrol_points[i]
+	_patrol_i = i
+	_path = PackedVector3Array()
+	_path_i = 0
+	_repath_cd = 0.0
+	_move_dir = Vector3.ZERO
 
 func _nearest_patrol_index() -> int:
 	var best := 0

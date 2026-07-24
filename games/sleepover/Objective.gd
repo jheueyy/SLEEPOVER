@@ -180,6 +180,31 @@ func grab_available(player_pos: Vector3) -> bool:
 			return blurred_is_me and _clue != null and _near(_clue.position, player_pos)
 	return false
 
+## Distance to the nearest thing here an E PRESS could act on, or INF when this
+## objective has nothing pressable in reach. Main uses it to arbitrate the single
+## E key between objectives, lore pickups and rescuing a cocooned teammate —
+## nearest wins. The deadbolt is deliberately absent: it's a hold driven from
+## update(), so it never consumes the press and must not block a rescue.
+func interact_distance(player_pos: Vector3) -> float:
+	if done:
+		return INF
+	var best := INF
+	match def.kind:
+		ObjectiveDef.Kind.LANDLINE, ObjectiveDef.Kind.GARAGE_CODE, ObjectiveDef.Kind.BREAKER:
+			if _clue != null and _near(_clue.position, player_pos):
+				best = minf(best, player_pos.distance_to(_clue.position))
+			if _action != null and _near(_action.position, player_pos):
+				best = minf(best, player_pos.distance_to(_action.position))
+		ObjectiveDef.Kind.DOG:
+			if not _has_snack and _clue != null and _near(_clue.position, player_pos):
+				best = minf(best, player_pos.distance_to(_clue.position))
+			if _has_snack and _dog != null and _near(_dog.position, player_pos):
+				best = minf(best, player_pos.distance_to(_dog.position))
+		ObjectiveDef.Kind.GLASSES:
+			if blurred_is_me and _clue != null and _near(_clue.position, player_pos):
+				best = minf(best, player_pos.distance_to(_clue.position))
+	return best
+
 ## Returns true if this objective grabbed the E press (so Main stops looking).
 func try_interact(player_pos: Vector3) -> bool:
 	if done:

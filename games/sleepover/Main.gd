@@ -37,7 +37,7 @@ enum Phase { LOBBY, LIGHTS_OUT, ROUND, RESULTS }
 @export var unzip_loudness: float = 0.85     ## the loud RRRIP the unzip broadcasts
 
 @export_group("Voice")
-@export var voice_range: float = 14.0        ## proximity voice falloff (m); monster never hears voice
+@export var voice_range: float = 20.0        ## proximity voice falloff (m); monster never hears voice
 
 var _player: SleepingBagPlayer
 var _monster: NoiseMonster
@@ -513,6 +513,11 @@ func _run_selftest() -> void:
 	var stairs_ok := await _selftest_stairs()
 	pass_all = pass_all and stairs_ok
 
+	# 20. PLAYTEST REGRESSIONS. Five separate bugs from the first live 2-player
+	# session, each of which passed every existing test while being broken in play.
+	pass_all = _selftest_playtest_fixes() and pass_all
+	pass_all = await _selftest_monster_containment() and pass_all
+
 	# Hand the player's real save back, untouched by any of the above.
 	Scrapbook.use_test_path("")
 	Scrapbook.load_game()
@@ -521,6 +526,128 @@ func _run_selftest() -> void:
 
 	print("[SELFTEST] RESULT: %s" % ("ALL PASS" if pass_all else "FAIL"))
 	get_tree().quit(0 if pass_all else 1)
+
+func _despawn_test_ghost(pid: int) -> void:
+	if not _remote_bags.has(pid):
+		return
+	VoiceManager.unregister_player(pid)
+	_remote_bags[pid].queue_free()
+	_remote_bags.erase(pid)
+	_ghost_targets.erase(pid)
+	_ghost_eyes.erase(pid)
+	_ghost_mood.erase(pid)
+
+## Regressions from the first live 2-player playtest. Every one of these shipped
+## green through the whole suite while being broken in the players' hands, so
+## each gets an assert pinned to the symptom that was actually reported.
+func _selftest_playtest_fixes() -> bool:
+	# A. "door unlocked too early" — an exit objective completing must not open
+	# its physical blocker until all 3 tasks are done.
+	_apply_phase(Phase.LOBBY, {})
+	_host_start_round()
+	_apply_phase(Phase.ROUND, {})
+	var door_group := ""
+	var door_obj := ""
+	for e: Dictionary in HouseSuburban.exits():
+		var need: String = EXIT_OBJECTIVE.get(e["name"], "")
+		if str(e["door"]) != "" and need != "":
+			door_group = str(e["door"])
+			door_obj = need
+			break
+	_mark_objective_done(door_obj)
+	var shut_before := _exit_door_locked(door_group)
+	_escape_armed = true
+	_refresh_exit_doors()
+	var open_after := not _exit_door_locked(door_group)
+	_escape_armed = false
+	var door_ok := door_group != "" and shut_before and open_after
+
+	# B. "objectives weren't letting me hold E" — a cocooned teammate inside
+	# rescue_range used to hijack E outright. Now the NEAREST candidate wins.
+	var probe_o: Objective = null
+	var probe_p := Vector3.ZERO
+	for o: Objective in _objectives:
+		if o.interact_distance(o.def.action_spot) < INF:
+			probe_o = o
+			probe_p = o.def.action_spot
+			break
+	var focus_ok := false
+	if probe_o != null:
+		var od := probe_o.interact_distance(probe_p)
+		_player.rescue()
+		_player.global_position = probe_p
+		var g2 := _spawn_remote_bag(4243)
+		g2.set_meta("cocooned", true)
+		# Caught friend in reach but FARTHER than the objective -> objective keeps E.
+		g2.global_position = probe_p + Vector3(0, 0, minf(od + 0.4, rescue_range - 0.05))
+		_update_rescue(0.0)
+		var obj_wins: bool = str(_interact_focus()["kind"]) == "objective"
+		# Closer than the objective -> the rescue takes it back.
+		g2.global_position = probe_p + Vector3(0, 0, maxf(od - 0.3, 0.05))
+		_update_rescue(0.0)
+		var rescue_wins: bool = str(_interact_focus()["kind"]) == "rescue"
+		focus_ok = od + 0.4 < rescue_range and obj_wins and rescue_wins
+		_despawn_test_ghost(4243)
+		_rescue_target = null
+
+	# C. "was not able to spectate" — with your last teammate ALSO caught, the
+	# camera key used to go dead at exactly the worst moment.
+	var g3 := _spawn_remote_bag(4244)
+	g3.set_meta("cocooned", true)
+	_cocoon_local()
+	var coc_spec := _can_spectate()
+	_toggle_spectate()
+	var coc_spec_on: bool = _spectating == 4244 and _spectate_target() == g3
+	_stop_spectating()
+	_player.rescue()
+	_despawn_test_ghost(4244)
+
+	# D. _all_cocooned must not end a round on absent data: a teammate on the
+	# roster whose ghost state hasn't arrived is NOT a caught teammate.
+	var had_9001: bool = LobbyManager.players.has(9001)
+	LobbyManager.players[9001] = {"name": "Ghostless"}
+	_cocoon_local()
+	var roster_ok := not _all_cocooned()
+	if not had_9001:
+		LobbyManager.players.erase(9001)
+	_player.rescue()
+
+	var ok := door_ok and focus_ok and coc_spec and coc_spec_on and roster_ok
+	print("[SELFTEST] playtest-fixes: door-shut-until-armed=%s e-nearest-wins=%s "
+		% [door_ok, focus_ok]
+		+ "spectate-cocooned-mate=%s(%s) roster-aware-loss=%s -> %s"
+		% [coc_spec, coc_spec_on, roster_ok, ok])
+	return ok
+
+## "The monster glitched through the wall and ended up on the roof" — which is
+## also the likeliest cause of the reported chase-less round. It has no collider
+## by design, so containment is code, and this runs REAL physics frames rather
+## than calling the clamp directly: the bug would come back just as easily by
+## unhooking the call as by breaking the maths.
+func _selftest_monster_containment() -> bool:
+	var saved := _monster.global_transform
+	var saved_wake := _monster.wake_delay
+	_monster.set_wake(0.0)   # a sleeping monster doesn't run its physics body
+
+	var roof := HouseSuburban.scaled(Vector3(0.0, 0.0, 0.0))
+	roof.y = 12.0                                          # above the gable ridge
+	_monster.global_position = roof
+	for _i in 6:
+		await get_tree().physics_frame
+	var off_roof := HouseSuburban.is_inside(_monster.global_position)
+	var roof_y := _monster.global_position.y
+
+	_monster.global_position = Vector3(60.0, 0.4, 60.0)    # out in the neighbourhood
+	for _i in 6:
+		await get_tree().physics_frame
+	var warped_back := HouseSuburban.is_inside(_monster.global_position)
+
+	_monster.set_wake(saved_wake)
+	_monster.global_transform = saved
+	var ok := off_roof and warped_back
+	print("[SELFTEST] monster-containment: off-roof=%s (y %.2f -> %.2f) back-in-footprint=%s -> %s"
+		% [off_roof, 12.0, roof_y, warped_back, ok])
+	return ok
 
 ## Audit: every gameplay anchor sits on solid floor at its expected height (no
 ## holes, no void). Returns false + prints the offenders if any anchor is unsupported.
@@ -950,10 +1077,10 @@ void fragment() {
 	_cocoon_overlay.visible = false
 	layer.add_child(_cocoon_overlay)
 	_cocoon_text = Label.new()
-	_cocoon_text.text = "COCOONED\n\nYou are zipped in tight.\nA friend must hold E next to you for 5 seconds.\n\n(hold Q to look back over your shoulder)"
+	_cocoon_text.text = "COCOONED"  # rewritten live by _update_cocoon_text()
 	_cocoon_text.set_anchors_preset(Control.PRESET_CENTER)
-	_cocoon_text.position = Vector2(-260, -80)
-	_cocoon_text.custom_minimum_size = Vector2(520, 160)
+	_cocoon_text.position = Vector2(-260, -110)
+	_cocoon_text.custom_minimum_size = Vector2(520, 220)
 	_cocoon_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_cocoon_text.add_theme_font_size_override("font_size", 24)
 	_cocoon_overlay.add_child(_cocoon_text)
@@ -1585,7 +1712,12 @@ func _mark_objective_done(id: String) -> void:
 	# WHAT + WHETHER, never WHERE: don't name the door — a door-objective just says
 	# it opened an exit; the player finds the now-open door in the world.
 	if opened != "":
-		_show_toast("Task done (%d/3) — a door just unlocked!" % mini(_done_ids.size(), 3), 4.0)
+		# Don't promise an open door before 3/3 — the blocker stays shut until armed.
+		if _escape_armed:
+			_show_toast("Task done (%d/3) — a door just unlocked!" % mini(_done_ids.size(), 3), 4.0)
+		else:
+			_show_toast("Task done (%d/3) — that's a way out, once all 3 are done."
+				% mini(_done_ids.size(), 3), 4.0)
 	else:
 		_show_toast("Task done (%d/3)." % mini(_done_ids.size(), 3), 3.0)
 	print("[NETTEST] objective done: %s (%d) opened=%s" % [id, _done_ids.size(), opened])
@@ -1615,12 +1747,14 @@ func _open_exit_names() -> Array[String]:
 			out.append(e["name"])
 	return out
 
-## Show/hide each physical door blocker to match its exit's open state.
+## Show/hide each physical door blocker to match its exit's open state. A door
+## needs BOTH its own objective done AND the escape armed (3/3) — completing one
+## task must never crack a physical way out early.
 func _refresh_exit_doors() -> void:
 	for e: Dictionary in HouseSuburban.exits():
 		if e["door"] == "":
 			continue
-		var open := _exit_is_open(e["name"])
+		var open := _escape_armed and _exit_is_open(e["name"])
 		for node: Node in get_tree().get_nodes_in_group(e["door"]):
 			var d := node as StaticBody3D
 			d.visible = not open
@@ -1752,6 +1886,13 @@ func _update_rescue(delta: float) -> void:
 		return
 
 	_rescue_target = candidate
+	# E is shared with objectives and lore. Only hold-to-rescue when the cocooned
+	# bag is the nearest thing E could act on, so a friend caught next to a keypad
+	# doesn't lock you out of the keypad (or vice versa).
+	if str(_interact_focus()["kind"]) != "rescue":
+		_rescue_t = 0.0
+		return
+
 	if Input.is_key_pressed(KEY_E):
 		if _rescue_t == 0.0:
 			_rescue_zipped = false
@@ -1853,7 +1994,10 @@ func _unhandled_input(event: InputEvent) -> void:
 				# Flip push-to-talk <-> open mic mid-round (persists).
 				VoiceManager.toggle_open_mic()
 				_show_toast("MIC: %s" % VoiceManager.mic_mode_text(), 2.0)
-			KEY_TAB:
+			KEY_F:
+				# NOT Tab: Tab is ui_focus_next, so Godot's GUI focus system eats
+				# it in the viewport and it never reaches _unhandled_input. That
+				# left cocooned players pressing a key that did literally nothing.
 				_toggle_spectate()
 			KEY_BRACKETLEFT:
 				_cycle_spectate(-1)
@@ -1882,28 +2026,52 @@ func _active_entry() -> Objective:
 			return o
 	return null
 
+## What one E press/hold acts on right now: whichever candidate is NEAREST.
+## Before this, a cocooned teammate anywhere within rescue_range hijacked E and
+## silently disabled every objective in reach — you could stand on a keypad next
+## to a caught friend and neither would respond.
+func _interact_focus() -> Dictionary:
+	var p := _player.global_position
+	var out := {"kind": "none", "obj": null, "frag": null, "dist": INF}
+	if _rescue_target != null:
+		out = {"kind": "rescue", "obj": null, "frag": null,
+			"dist": p.distance_to(_rescue_target.global_position)}
+	for o: Objective in _objectives:
+		var d := o.interact_distance(p)
+		if d < float(out["dist"]):
+			out = {"kind": "objective", "obj": o, "frag": null, "dist": d}
+	for fr: Fragment in _fragments:
+		if fr.near(p):
+			var d := p.distance_to(fr.position)
+			if d < float(out["dist"]):
+				out = {"kind": "fragment", "obj": null, "frag": fr, "dist": d}
+	return out
+
 func _try_interact_press() -> void:
 	if phase != Phase.ROUND or _player.state == SleepingBagPlayer.State.COCOONED:
+		print("[PLAYTEST] E ignored: phase=%d cocooned=%s"
+			% [phase, _player.state == SleepingBagPlayer.State.COCOONED])
 		return
-	if _rescue_target != null:
-		return  # rescue is the hold-E path
 	if _unzip_target != null or _unzip_frag != null:
 		return  # already unzipping
 	var p := _player.global_position
-	# Grabbing a clue/item means unzipping the bag: a slow, loud hold-E channel.
-	for o: Objective in _objectives:
-		if o.grab_available(p):
-			_begin_unzip(o, null)
-			return
-	# Lore fragments are picked up the same way (same risk + loud ping).
-	for fr: Fragment in _fragments:
-		if fr.near(p):
-			_begin_unzip(null, fr)
-			return
-	# Everything else (dial panels, dog hand-off, deadbolt) fires on the press.
-	for o: Objective in _objectives:
-		if o.try_interact(p):
-			return
+	var focus := _interact_focus()
+	match str(focus["kind"]):
+		"rescue":
+			# Hold-E channel owned by _update_rescue; the press just starts it.
+			print("[PLAYTEST] E -> rescue (%.2fm)" % float(focus["dist"]))
+		"fragment":
+			_begin_unzip(null, focus["frag"] as Fragment)
+		"objective":
+			var o := focus["obj"] as Objective
+			# Grabbing a clue/item means unzipping the bag: a slow, loud hold-E
+			# channel. Panels and hand-offs fire instantly on the press.
+			if o.grab_available(p):
+				_begin_unzip(o, null)
+			elif not o.try_interact(p):
+				print("[PLAYTEST] E -> %s in reach but nothing to do" % o.def.id)
+		_:
+			print("[PLAYTEST] E -> nothing in reach at %v" % p)
 
 func _begin_unzip(o: Objective, fr: Fragment) -> void:
 	_unzip_target = o
@@ -1955,6 +2123,7 @@ func _process(delta: float) -> void:
 		var cc := (_cocoon_overlay as ColorRect).color
 		cc.a = move_toward(cc.a, 0.94, delta * 1.5)
 		(_cocoon_overlay as ColorRect).color = cc
+		_update_cocoon_text()
 
 	_update_outro(delta)
 
@@ -2027,21 +2196,32 @@ func _update_prompts() -> void:
 			_prompt_label.position = PROMPT_POS
 		return
 	_prompt_label.position = PROMPT_POS
-	if _rescue_target != null:
-		if not Input.is_key_pressed(KEY_E):
-			_prompt_label.text = "HOLD E TO RESCUE"
-		return
 	var p := _player.global_position
+	# The prompt must name whatever E is ACTUALLY bound to this frame, or players
+	# hold a key that's quietly going somewhere else.
+	var focus := _interact_focus()
+	match str(focus["kind"]):
+		"rescue":
+			if not Input.is_key_pressed(KEY_E):
+				_prompt_label.text = "HOLD E TO RESCUE"
+			return
+		"fragment":
+			_prompt_label.text = "✦ %s  (hold E: unzip)" \
+				% (focus["frag"] as Fragment).frag_type().to_upper()
+			return
+		"objective":
+			var fo := focus["obj"] as Objective
+			var fpr := fo.prompt(p)
+			if fpr != "":
+				# Hint that grabs cost an unzip, so the loud channel isn't a surprise.
+				_prompt_label.text = fpr + ("  (hold E: unzip)" if fo.grab_available(p) else "")
+				return
+	# Nothing pressable won: fall through for hold-only actions (the deadbolt),
+	# which never consume the press and so never enter the focus arbitration.
 	for o: Objective in _objectives:
 		var pr := o.prompt(p)
 		if pr != "":
-			# Hint that grabs cost an unzip, so the loud channel isn't a surprise.
-			_prompt_label.text = pr + ("  (hold E: unzip)" if o.grab_available(p) else "")
-			return
-	# Lore fragment in reach.
-	for fr: Fragment in _fragments:
-		if fr.near(p):
-			_prompt_label.text = "✦ %s  (hold E: unzip)" % fr.frag_type().to_upper()
+			_prompt_label.text = pr
 			return
 
 func _update_tracker() -> void:
@@ -2110,6 +2290,15 @@ func _fmt_clock(t: float) -> String:
 func _all_cocooned() -> bool:
 	if _player.state != SleepingBagPlayer.State.COCOONED:
 		return false
+	# Roster-aware. Judging this on _remote_bags alone means a join race or a gap
+	# in ghost state reads as "everyone is caught" and ends the round on absent
+	# data — so require a ghost to exist for every other player in the lobby.
+	var expected := 0
+	for pid: int in LobbyManager.players:
+		if pid != _my_id():
+			expected += 1
+	if _remote_bags.size() < expected:
+		return false
 	for pid: int in _remote_bags:
 		if not _remote_bags[pid].get_meta("cocooned", false):
 			return false
@@ -2166,6 +2355,27 @@ func _ensure_inbag_bus() -> void:
 	lp.cutoff_hz = 600.0  # muffled: only the low breathy body of the sound survives
 	AudioServer.add_bus_effect(idx, lp)
 
+## Being caught used to mean staring at fabric-dark with zero information until
+## someone happened to rescue you. It reads as "the round ended for me". Tell the
+## cocooned player what's still true: who is up, that rescue is real, and that
+## they can watch. Rebuilt every frame because the roster changes under them.
+func _update_cocoon_text() -> void:
+	if _spectating != -1:
+		return  # watching a friend — overlay is hidden anyway
+	var up: Array[String] = []
+	for pid: int in _remote_bags:
+		if not bool(_remote_bags[pid].get_meta("cocooned", false)):
+			up.append(str(LobbyManager.players.get(pid, {}).get("name", "Player %d" % pid)))
+	up.sort()
+	var t := "COCOONED\n\nYou are zipped in tight.\n"
+	if up.is_empty():
+		t += "Nobody is left standing.\n"
+	else:
+		t += "%s must hold E next to you for %d seconds.\n" % [
+			" and ".join(up), int(rescue_time)]
+	t += "\n(hold Q to look back  ·  F to watch a friend)"
+	_cocoon_text.text = t
+
 func _reset_cocoon_ui() -> void:
 	# Rescue / lobby reset: drop the overlay, stop the in-bag breathing, snap the
 	# chase cam back out of the bag.
@@ -2182,11 +2392,14 @@ func _reset_cocoon_ui() -> void:
 func _can_spectate() -> bool:
 	return _player.state == SleepingBagPlayer.State.COCOONED and not _spectatable().is_empty()
 
+## ANY teammate, including a cocooned one. Restricting this to survivors meant that
+## the moment your last teammate was also caught the key went dead — the worst
+## possible time to take someone's camera away. Watching a cocooned friend's bag
+## from outside still shows you the room, the monster, and any rescue coming.
 func _spectatable() -> Array[int]:
 	var out: Array[int] = []
 	for pid: int in _remote_bags:
-		if not bool(_remote_bags[pid].get_meta("cocooned", false)):
-			out.append(pid)
+		out.append(pid)
 	out.sort()
 	return out
 
@@ -2194,10 +2407,14 @@ func _toggle_spectate() -> void:
 	if _spectating != -1:
 		_stop_spectating()
 		return
-	if not _can_spectate():
+	# Say why nothing happened rather than silently swallowing the key.
+	if _player.state != SleepingBagPlayer.State.COCOONED:
+		return
+	if _spectatable().is_empty():
+		_show_toast("nobody left to watch.", 2.0)
 		return
 	_spectating = _spectatable()[0]
-	_show_toast("SPECTATING %s   ([ ] to cycle, TAB to return)" % _spectate_name(), 3.0)
+	_show_toast("SPECTATING %s   ([ ] to cycle, F to return)" % _spectate_name(), 3.0)
 
 func _cycle_spectate(dir: int) -> void:
 	if _spectating == -1:
@@ -2223,9 +2440,9 @@ func _spectate_name() -> String:
 func _spectate_target() -> Node3D:
 	if _spectating == -1:
 		return null
-	# Rescued / vanished / gone home: fall back to your own view.
+	# Vanished / gone home / you got rescued: fall back to your own view. A target
+	# getting cocooned no longer kicks you out — you keep watching their bag.
 	if not _remote_bags.has(_spectating) \
-			or bool(_remote_bags[_spectating].get_meta("cocooned", false)) \
 			or _player.state != SleepingBagPlayer.State.COCOONED:
 		_stop_spectating()
 		return null

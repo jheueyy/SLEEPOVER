@@ -305,12 +305,25 @@ Six, data-driven in `Awards.DEFS` so they're cheap to swap after playtests:
   investment" number that makes *run it back* stick.
 
 ## Cocooned spectator cam
-Cocooned players can press **TAB** to watch a teammate (`[` / `]` to cycle). It is
+Cocooned players can press **F** to watch a teammate (`[` / `]` to cycle). It is
 **opt-in**: fabric-dark stays the default view so Sprint 5's claustrophobic cocoon beat
 survives — you're just never stuck staring at fabric for minutes waiting on a rescue
-that isn't coming. Auto-returns on rescue, on the round ending, or if the person you're
-watching gets cocooned themselves. **Only available while cocooned** — a live player
-watching through a teammate's eyes would be an information exploit.
+that isn't coming. Auto-returns on rescue or on the round ending. **Only available
+while cocooned** — a live player watching through a teammate's eyes would be an
+information exploit.
+
+Two rules here are playtest scar tissue, both of which made "caught" read as *the
+round ended for me*:
+
+- **Not Tab.** Tab is `ui_focus_next`; Godot's GUI focus system eats it in the
+  viewport, so it never reached `_unhandled_input` and the key did nothing at all.
+- **You can watch a cocooned teammate too.** Restricting the list to survivors meant
+  the camera died the moment your last teammate was also caught — the exact moment
+  you most need something to look at. Their bag still shows you the room and the
+  Housesitter.
+
+The fabric-dark overlay is **live**, not a static card: it names who is still standing,
+what they have to do to get you out, and the keys. Silence was the bug.
 
 ## Proximity voice (`core/audio/VoiceManager.gd`, autoload)
 Capture is the **Steam voice API** (compression is Steam's; uses the **system
@@ -332,9 +345,18 @@ s16 tone packets down the identical path, so transport is provable headlessly.
 
 | Constant | Default | What it does |
 |---|---|---|
-| `Main.voice_range` | 14.0 | AudioStreamPlayer3D falloff — voice is room-scale-ish, like the hearing radius |
+| `Main.voice_range` | 20.0 | AudioStreamPlayer3D `max_distance` — past here you are inaudible |
+| `VoiceManager.VOICE_UNIT_SIZE` | 6.0 | radius (m) of full volume before falloff starts — a room stays comfortable |
+| `VoiceManager.VOICE_VOLUME_DB` | +6.0 | speech sits above ambience; raw 0 dB was too quiet to carry |
 | `VoiceManager.PTT_KEY` | V | push-to-talk |
 | `VoiceManager.SPEAK_HOLD` | 0.4 | secs the 🗣 indicator lingers after the last packet |
+
+**Set all four, not just `max_distance`.** The first version set only that and left
+`unit_size` (10) and the inverse-*square* model on Godot's defaults, which makes a
+voice near-silent long before `max_distance` — the playtest read as *"we had to be
+right on top of each other."* Falloff is now plain `ATTENUATION_INVERSE_DISTANCE`, so
+the tail thins out instead of collapsing. Distance must still cost you something —
+that's the point of proximity chat — but the cliff was in the wrong place.
 
 - Each peer's voice plays from an `AudioStreamPlayer3D` **parented to their ghost
   bag** (mouth height 0.7) — proximity attenuation via the 3D mixer, for free.
@@ -451,6 +473,35 @@ use `i+1`. Hopping is unchanged: still the fast way up, still tumble-chains comi
 > Regression cover: `_selftest_stairs()` physically shuffles the bag up **every**
 > flight and asserts it gains height, spends **zero stamina**, and doesn't slide back.
 > Before the fix it measured 0.08 / 0.00 / 0.04 m climbed in 4 s; after, 1.97 / 2.41 / 1.96.
+
+### One E key, nearest wins
+E does several jobs — read a clue, open a panel, hand off the snack, unzip for a lore
+fragment, hold to rescue a cocooned teammate. It goes to whichever candidate is
+**physically nearest**, and the prompt always names the job it is currently bound to.
+
+The original rule was "a cocooned teammate in `rescue_range` takes E, full stop", which
+meant a friend caught next to a keypad silently disabled *every objective in reach* —
+the playtest report *"objectives weren't letting me hold E to complete or engage."* One
+key with an invisible priority order is a key players stop trusting.
+
+The deadbolt sits **outside** this arbitration on purpose: it's a hold driven from
+`Objective.update()` and never consumes the press, so it can't block a rescue.
+
+## Doors, containment, and ending the round
+Three rules that all exist because a live playtest broke them:
+
+- **A door blocker opens only when `_escape_armed` AND its own objective is done.**
+  Completing one task used to crack its physical door immediately, at 1/3. The escape
+  is the reward for three tasks; nothing physical may leak before that.
+- **The monster is contained every physics frame** (`Monster._contain()`), clamped to
+  `HouseSuburban.INSIDE_MIN_Y … INSIDE_MAX_Y` and warped to the nearest patrol point if
+  it leaves the footprint. It has **no collider by design** — that's what lets it walk
+  stairs and nav links smoothly — so nothing physically stops it leaving the house. A
+  playtest ended with the Housesitter patrolling the *roof*, which is a round with no
+  monster in it.
+- **`_all_cocooned()` is roster-aware.** A teammate on the `LobbyManager` roster whose
+  ghost state hasn't arrived yet is not a caught teammate. Ending a round on absent data
+  is the worst possible false positive.
 
 ## The speed ladder (keep this ordering true while tuning!)
 ```

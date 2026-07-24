@@ -294,6 +294,27 @@ static func fragment_anchors() -> Array[Vector3]:
 # ── Floors & distribution ────────────────────────────────────────────────────
 enum Floor { BASEMENT, GROUND, UPSTAIRS }
 
+# ── Playable shell ───────────────────────────────────────────────────────────
+# The monster is collision-free by design (navmesh + a floor-snap raycast), so a
+# bad nav hop can drop it outside the house — where the snap ray latches onto the
+# gable roof and it wanders up there forever, producing a round with no chase in
+# it. These are the bounds of anywhere the game is allowed to happen: plan x/z
+# (pre-S) spanning the slabs, and REAL y from under the basement floor to just
+# above the attic floor, which is well below the eaves at 8.2.
+const INSIDE_MIN_XZ := Vector2(-8.0, -6.0)
+const INSIDE_MAX_XZ := Vector2(8.0, 6.0)
+const INSIDE_MIN_Y := -3.6
+const INSIDE_MAX_Y := 7.0
+
+## True when a REAL world position is inside the playable shell (x/z are scaled
+## by S in world space; y is never scaled).
+static func is_inside(pos: Vector3) -> bool:
+	var px := pos.x / S
+	var pz := pos.z / S
+	return px >= INSIDE_MIN_XZ.x and px <= INSIDE_MAX_XZ.x \
+		and pz >= INSIDE_MIN_XZ.y and pz <= INSIDE_MAX_XZ.y \
+		and pos.y >= INSIDE_MIN_Y and pos.y <= INSIDE_MAX_Y
+
 ## Which floor a REAL (unscaled-y) world height belongs to. Attic counts as up.
 static func floor_of(y: float) -> Floor:
 	if y < -1.0:

@@ -32,7 +32,13 @@ const OCCLUSION_INTERVAL := 0.15 ## secs between LOS checks (only for peers actu
 
 var enabled: bool = true         ## settings master switch
 var open_mic: bool = false       ## false = push-to-talk (V)
-var voice_range: float = 14.0    ## AudioStreamPlayer3D max_distance (set by Main)
+var voice_range: float = 20.0    ## AudioStreamPlayer3D max_distance (set by Main)
+
+# Proximity voice loudness. unit_size is the radius (m) at which the voice is at
+# full volume before falloff starts — big enough that a room-sized conversation
+# stays comfortable, small enough that distance still means something.
+const VOICE_UNIT_SIZE := 6.0
+const VOICE_VOLUME_DB := 6.0
 var test_tone_mode: bool = false ## loopback harness: send tone packets, no mic
 
 # Stats the selftest asserts on (headless can't hear, but it can count).
@@ -244,7 +250,16 @@ func register_player(pid: int, parent: Node3D) -> void:
 	gen.mix_rate = float(_sample_rate if SteamManager.steam_ok else RAW_RATE)
 	gen.buffer_length = 0.2
 	p.stream = gen
+	# Setting only max_distance left everything else on Godot's defaults, where
+	# unit_size 10 + inverse-distance falloff makes a voice near-silent long
+	# before max_distance — playtest read as "we had to be right on top of each
+	# other". Speech needs a flat-ish core out to conversational range and then a
+	# quick drop, so: bigger unit_size, a lift on the bus level, and INVERSE_SQUARE
+	# swapped for plain INVERSE so the tail doesn't collapse.
 	p.max_distance = voice_range
+	p.unit_size = VOICE_UNIT_SIZE
+	p.volume_db = VOICE_VOLUME_DB
+	p.attenuation_model = AudioStreamPlayer3D.ATTENUATION_INVERSE_DISTANCE
 	p.position = Vector3(0, 0.7, 0)  # mouth height on a 0.9m bag
 	parent.add_child(p)
 	p.play()
