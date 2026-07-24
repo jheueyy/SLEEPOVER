@@ -228,6 +228,67 @@ const DOG_PATH: Array = [
 # The Deadbolt: two players at the back door (kitchen), both holding E.
 const DEADBOLT_SPOT := Vector3(-6.5, 0.0, -5.6)
 
+# ── Hop economy props ────────────────────────────────────────────────────────
+# THE RULE (FEEL.md "Stairs & verbs"): hops gate SHORTCUTS and OPTIONAL loot,
+# never a required objective. Stairs made hops a choice again; these make the
+# choice interesting.
+#
+# PERCHES: crate-height furniture with a lore anchor on TOP. One hop up; the
+# Fragment height gate means you cannot fish it off from the floor. Optional
+# risk/reward only — objective clues never spawn here. Kept BROAD (a 1.7m
+# footprint, > the flat hop apex of 0.82m is tall) so a hopping capsule reliably
+# lands ON it rather than clipping an edge and sliding off.
+const PERCH_H := 0.5
+const PERCH_W := 1.7   # world metres, wide enough to be a landing pad
+const PERCHES: Array = [
+	Vector3(-5.5, 0.0, 1.5),    # living room crate (ground)
+	Vector3(-3.0, 3.0, 4.0),    # master bedroom dresser (upstairs)
+	Vector3(-1.0, -3.0, 4.0),   # basement rec box pile (basement)
+	Vector3(6.5, 0.0, -5.0),    # garage workbench crate (ground)
+]
+# CLUTTER: hop-height toy piles parked IN a doorway. Shuffle can't cross (the
+# capsule wedges against a 0.4m pile); one hop sails over — but ONLY because each
+# pile is a THIN hurdle in the travel direction. A deep pile is a wall: pressed
+# against its face, the hop's forward momentum dies before you clear the top.
+# The monster (too dignified to hop toys) routes around, and so can you: every
+# cluttered doorway belongs to a room LOOP whose other door stays clear, so the
+# hop buys seconds, never passage. `depth` is the thin travel axis, `span` fills
+# the doorway; `axis` = "z" when you cross the doorway moving in z (wall runs
+# along x), "x" otherwise.
+const CLUTTER_H := 0.4
+const CLUTTER_DEPTH := 0.35   # world metres along the travel axis — a hurdle, not a wall
+const CLUTTER: Array = [
+	# kitchen|living doorway — the loop living->hall->dining->kitchen stays clear
+	{"at": Vector2(-5.5, -1.0), "span": 1.6, "base": 0.0, "axis": "z"},
+	# dining|pantry doorway — the pantry keeps its laundry AND garage doors
+	{"at": Vector2(2.0, -3.5), "span": 1.6, "base": 0.0, "axis": "x"},
+	# master|landing loop door — the master's corridor door stays clear
+	{"at": Vector2(-1.0, 3.0), "span": 1.6, "base": 3.0, "axis": "x"},
+]
+
+static func perch_tops() -> Array[Vector3]:
+	var out: Array[Vector3] = []
+	for p: Vector3 in PERCHES:
+		out.append(Vector3(p.x, p.y + PERCH_H, p.z))
+	return out
+
+# Loose household items (sock balls, party poppers) scatter across these at
+# round start. Kid-mess placement: the FLOORS of rooms, not shelves — you trip
+# over these, you don't hunt for them. Spread over all four levels so item
+# greed pulls players the same directions the clues do.
+const ITEM_SPOTS: Array = [
+	Vector3(-3.0, 0.0, 4.5),    # living room rug (ground)
+	Vector3(-6.8, 0.0, 0.5),    # kitchen corner (ground)
+	Vector3(4.5, 0.0, -1.5),    # laundry hall (ground)
+	Vector3(2.5, 0.0, 5.5),     # by the front entry (ground)
+	Vector3(6.8, 0.0, 3.0),     # garage floor (ground)
+	Vector3(-6.8, 3.0, -1.0),   # master bedroom floor (upstairs)
+	Vector3(-2.5, 3.0, -4.5),   # kid room 2 floor (upstairs)
+	Vector3(1.5, 3.0, 1.5),     # upstairs corridor (upstairs)
+	Vector3(-2.0, -3.0, 0.0),   # basement rec middle (basement)
+	Vector3(-4.0, 6.0, -3.0),   # attic floor (attic)
+]
+
 # The Garage Code: birthday clue somewhere (any floor), keypad by the garage door.
 const GARAGE_CLUE_SPOTS: Array = [
 	Vector3(-4.5, 0.0, 3.5),    # living room banner (ground)
@@ -278,12 +339,14 @@ static func scaled(p: Vector3) -> Vector3:
 	return Vector3(p.x * S, p.y, p.z * S)
 
 ## Anchor pool for lore fragments — the union of every objective's clue-spawn
-## spots (spread across all 3 floors), so lore-hunting shares the exact same risk
-## and traversal as objective clues. Returned scaled, deduped.
+## spots (spread across all 3 floors) PLUS the perch tops, so lore-hunting shares
+## the clue traversal risk and sometimes costs a hop on top. Returned scaled,
+## deduped. Objective clues themselves never use perches — hops must never gate
+## anything required.
 static func fragment_anchors() -> Array[Vector3]:
 	var out: Array[Vector3] = []
 	var pools: Array = [CLUE_SPOTS, GARAGE_CLUE_SPOTS, BREAKER_DIAGRAM_SPOTS,
-		GLASSES_SPOTS, [DOG_SNACK_SPOT]]
+		GLASSES_SPOTS, [DOG_SNACK_SPOT], perch_tops()]
 	for pool: Array in pools:
 		for p: Vector3 in pool:
 			var s := scaled(p)
@@ -301,8 +364,15 @@ enum Floor { BASEMENT, GROUND, UPSTAIRS }
 # it. These are the bounds of anywhere the game is allowed to happen: plan x/z
 # (pre-S) spanning the slabs, and REAL y from under the basement floor to just
 # above the attic floor, which is well below the eaves at 8.2.
-const INSIDE_MIN_XZ := Vector2(-8.0, -6.0)
-const INSIDE_MAX_XZ := Vector2(8.0, 6.0)
+#
+# The x/z bounds carry a MARGIN past the outer walls (±8, ±6): the monster's body
+# center legitimately sits right against a wall while patrolling a room edge, and
+# its floor-snap wander nudges it a few cm further — without the margin those edge
+# patrols trip the containment warp constantly (seen in loopback). The margin is
+# still nowhere near the roof (y-gated) or the neighbourhood, the real escapes.
+const INSIDE_MARGIN := 0.75  # plan units of slop past the outer walls
+const INSIDE_MIN_XZ := Vector2(-8.0 - INSIDE_MARGIN, -6.0 - INSIDE_MARGIN)
+const INSIDE_MAX_XZ := Vector2(8.0 + INSIDE_MARGIN, 6.0 + INSIDE_MARGIN)
 const INSIDE_MIN_Y := -3.6
 const INSIDE_MAX_Y := 7.0
 
@@ -381,6 +451,8 @@ const ROOMS: Array = [
 
 const COL_FLOOR := Color(0.30, 0.30, 0.34)
 const COL_WALL := Color(0.22, 0.22, 0.26)
+const COL_PERCH := Color(0.52, 0.40, 0.28)    # wooden crate / dresser
+const COL_CLUTTER := Color(0.80, 0.45, 0.40)  # heaped toys blocking a doorway
 const COL_ROOF := Color(0.34, 0.20, 0.18)
 const COL_STEP_A := Color(0.34, 0.28, 0.24)
 const COL_STEP_B := Color(0.40, 0.33, 0.28)
@@ -406,6 +478,22 @@ static func build(parent: Node3D) -> void:
 
 	for stair: Dictionary in STAIRS:
 		_build_stairs(parent, stair)
+
+	# Hop-economy props: perch crates (lore spawns on top) + doorway clutter.
+	# Both are plain layer-1 statics, so the navmesh bake carves them out and
+	# the Housesitter routes around them like any furniture.
+	for p: Vector3 in PERCHES:
+		_box(parent, Vector3(p.x * S, p.y + PERCH_H * 0.5, p.z * S),
+			Vector3(PERCH_W, PERCH_H, PERCH_W), COL_PERCH)
+	for c: Dictionary in CLUTTER:
+		var cat: Vector2 = c["at"]
+		var span: float = float(c["span"]) * S
+		var cbase: float = c["base"]
+		# Thin along the travel axis, wide across the doorway.
+		var csize := (Vector3(span, CLUTTER_H, CLUTTER_DEPTH) if c["axis"] == "z"
+			else Vector3(CLUTTER_DEPTH, CLUTTER_H, span))
+		_box(parent, Vector3(cat.x * S, cbase + CLUTTER_H * 0.5, cat.y * S),
+			csize, COL_CLUTTER)
 
 	# Chute rim: a glowing lip around the closet hole so it reads as a feature.
 	for rim: Array in [[3.5, 0.95], [3.5, 2.05], [2.95, 1.5], [4.05, 1.5]]:

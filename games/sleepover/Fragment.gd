@@ -54,8 +54,14 @@ func title() -> String:
 func body() -> String:
 	return str(data.get("body", ""))
 
+## Reach is a sphere PLUS a height gate: your grab must come from at-or-above
+## the fragment's level. Floor fragments pass trivially (a standing bag's center
+## sits ~0.45 above its floor); a fragment on a perch top does NOT — you cannot
+## fish it down from the floor, you hop up to it. That's the whole hop-economy
+## point of perches.
 func near(player_pos: Vector3) -> bool:
-	return not collected and position.distance_to(player_pos) < NEAR
+	return not collected and position.distance_to(player_pos) < NEAR \
+		and player_pos.y >= position.y + 0.1
 
 func mark_collected() -> void:
 	collected = true

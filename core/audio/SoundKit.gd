@@ -48,6 +48,8 @@ static func _generate(kind: String) -> AudioStreamWAV:
 		"shush": return _to_wav(_shush(), false)
 		"breath": return _to_wav(_breath(), true)
 		"tape": return _to_wav(_tape(), false)
+		"thump": return _to_wav(_thump(), false)
+		"pop": return _to_wav(_pop(), false)
 		_: return _to_wav(_click(), false)
 
 # ── Generators (all return mono float samples in [-1, 1]) ─────────────────
@@ -129,6 +131,28 @@ static func _click() -> PackedFloat32Array:
 	out.resize(n)
 	for i in n:
 		out[i] = randf_range(-0.9, 0.9) * exp(-float(i) * 0.01)
+	return out
+
+static func _thump() -> PackedFloat32Array:
+	# Balled-up socks hitting carpet: a soft dead thud, all body and no snap.
+	var n := int(RATE * 0.25)
+	var out := PackedFloat32Array()
+	out.resize(n)
+	for i in n:
+		var t := float(i) / RATE
+		out[i] = sin(TAU * 70.0 * (1.0 - t * 0.6) * t) * exp(-t * 18.0) * 0.85
+	return out
+
+static func _pop() -> PackedFloat32Array:
+	# Party popper: an instant crack of noise, fast decay, tiny confetti fizz.
+	var n := int(RATE * 0.35)
+	var out := PackedFloat32Array()
+	out.resize(n)
+	for i in n:
+		var t := float(i) / RATE
+		var crack := randf_range(-1.0, 1.0) * exp(-t * 30.0)
+		var fizz := randf_range(-0.2, 0.2) * exp(-t * 5.0)
+		out[i] = clampf(crack + fizz, -1.0, 1.0) * 0.9
 	return out
 
 static func _beep() -> PackedFloat32Array:

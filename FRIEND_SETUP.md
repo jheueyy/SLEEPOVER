@@ -56,6 +56,9 @@ you'd rather. You can also flip it mid-round with **M**.
 | **Q** (hold) | Look behind you |
 | **E** | Interact — read a clue, use a keypad, grab something. Some need a **hold**; the prompt tells you which. |
 | **E** (hold, next to a cocooned friend) | Unzip them free |
+| **E** (hold, at an item / lore) | Pick it up into your 2 inventory slots |
+| **1 / 2** | Use the item in that slot (throw a sock, pop a popper, turn the keys) |
+| **C** | Toggle first-person / third-person camera |
 | **0–9** | Dial a phone / type on a keypad, once its panel is open |
 | **V** (hold) | Push-to-talk |
 | **M** | Switch push-to-talk ↔ open mic |

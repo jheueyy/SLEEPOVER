@@ -10,6 +10,7 @@ signal completed(id: String)
 signal action_noise(pos: Vector3, loudness: float)
 signal toast(text: String)
 signal revealed(id: String)   ## a player read this objective's clue (HUD reveal)
+signal keys_granted(at: Vector3)  ## DOG only: the hand-off puts HOUSE KEYS in a bag
 
 enum Tracker { NOT_STARTED, IN_PROGRESS, DONE }
 
@@ -231,6 +232,10 @@ func try_interact(player_pos: Vector3) -> bool:
 			if _has_snack and _dog != null and _near(_dog.position, player_pos):
 				action_noise.emit(_dog.global_position, def.noise_loudness)
 				SoundKit.play_at(self, _dog.global_position, "bark")
+				# The dog doesn't unlock anything — it SURRENDERS THE KEYS. The
+				# feeder now carries them (a whole inventory slot) to the back
+				# door, and dropping or getting caught puts them on the floor.
+				keys_granted.emit(_dog.global_position)
 				_finish()
 				return true
 		ObjectiveDef.Kind.GLASSES:

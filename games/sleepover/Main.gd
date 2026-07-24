@@ -49,6 +49,8 @@ var _yaw: float = 0.0
 var _pitch: float = 0.0
 var _lookback: float = 0.0
 var _cocoon_cam: float = 0.0   ## 0 = normal chase cam, 1 = snapped inside the bag
+var _first_person: bool = false  ## C toggles; tumble/cocoon force third person
+var _fp_blend: float = 0.0       ## 0 = chase cam, 1 = eyes inside the bag
 var _porch_light: OmniLight3D  ## flickers during the 10s intro, then dies
 var _porch_dying: bool = false
 var _aim: MeshInstance3D
@@ -115,6 +117,7 @@ var _monster_fx_state: int = -1
 # that takes time and broadcasts a loud RRRIP. Panic-fumbles (+time) in a chase.
 var _unzip_target: Objective = null
 var _unzip_frag: Fragment = null   ## a lore fragment being unzipped (vs an objective grab)
+var _unzip_item: Item = null       ## a world item being unzipped into the inventory
 var _unzip_t: float = 0.0
 var _unzip_dur: float = 0.0
 var _unzip_panic: bool = false
@@ -128,6 +131,23 @@ var _frag_title: Label
 var _frag_body: Label
 var _frag_panel_t: float = 0.0
 var _tape_ui: AudioStreamPlayer
+
+# Inventory + world items (this round). Two slots, that's the whole game: the
+# keys take one, so every sock you hoard is a choice. World items are host-
+# authoritative like fragments — first claim wins.
+var _items: Array[Item] = []
+var _inv: Array[int] = [-1, -1]          ## Item.Kind per slot, -1 = empty
+var _item_uid_next: int = 1000           ## host: uid counter (throws mint new ones)
+var _inv_label: Label
+var _keys_door_open: bool = false        ## HOUSE KEYS turned in the back door lock
+
+@export_group("Items")
+@export var sock_throw_range: float = 8.0     ## max throw distance (m)
+@export var sock_loudness: float = 0.9        ## the thump where it lands — a real decoy
+@export var popper_loudness: float = 1.0      ## the bang — loudest thing you can do
+@export var popper_flinch_secs: float = 2.0   ## how long she recoils
+@export var item_sock_count: int = 3          ## socks scattered per round
+@export var item_popper_count: int = 1        ## poppers per round (scarce on purpose)
 
 # Glasses blur (post-process on the one blurred player)
 var _blur_overlay: ColorRect
@@ -519,6 +539,24 @@ func _run_selftest() -> void:
 	pass_all = await _selftest_monster_containment() and pass_all
 	pass_all = _selftest_pause() and pass_all
 
+	# 23. ITEMS + 2-SLOT INVENTORY. Spawn -> nearest-wins pickup -> throw (noise
+	# somewhere else, sock re-grabbable) -> popper (flinch, then she investigates
+	# the bang) -> cocoon spills your slots onto the floor.
+	pass_all = await _selftest_items() and pass_all
+
+	# 24. THE HOUSE KEYS. Dog hand-off -> a carried item -> the back door stays
+	# shut even ARMED until the keys physically turn in its lock.
+	pass_all = _selftest_keys() and pass_all
+
+	# 25. FIRST PERSON. Opt-in via C; a tumble FORCES third person (nausea rule:
+	# no spinning first-person face-plants, and the pratfall is meant to be seen).
+	pass_all = _selftest_first_person() and pass_all
+
+	# 26. HOP ECONOMY (real physics). Clutter: shuffle can't cross, ONE hop can.
+	# Perches: the lore on top is out of reach from the floor and in reach after
+	# a hop up. This is what makes hop pips worth hoarding outside chases.
+	pass_all = await _selftest_hop_economy() and pass_all
+
 	# Hand the player's real save back, untouched by any of the above.
 	Scrapbook.use_test_path("")
 	Scrapbook.load_game()
@@ -682,6 +720,154 @@ func _selftest_monster_containment() -> bool:
 		% [off_roof, 12.0, roof_y, warped_back, ok])
 	return ok
 
+## Items and the 2-slot inventory, end to end through the real code paths.
+func _selftest_items() -> bool:
+	_apply_phase(Phase.LOBBY, {})
+	_host_start_round()
+	_apply_phase(Phase.ROUND, {})
+	var spawned := _items.size() == item_sock_count + item_popper_count
+
+	# Pickup: stand on a sock, the focus arbitration must hand E to it, and
+	# committing the claim must fill slot 1 and void the world prop.
+	var sock: Item = null
+	for it: Item in _items:
+		if it.kind == Item.Kind.SOCK:
+			sock = it
+			break
+	_player.rescue()
+	_player.global_position = sock.position + Vector3.UP * 0.1
+	var focus_item: bool = str(_interact_focus()["kind"]) == "item"
+	_finish_item_pickup(sock)
+	var picked: bool = _inv[0] == Item.Kind.SOCK and sock.taken
+
+	# Hands full: with both slots occupied the sock underfoot leaves the E race.
+	_inv[1] = Item.Kind.POPPER
+	var spare := _spawn_item(99001, Item.Kind.SOCK, _player.global_position)
+	var full_skips: bool = str(_interact_focus()["kind"]) != "item"
+	_inv[1] = -1
+	spare.mark_taken()
+
+	# Throw: slot empties, the landing minted a NEW re-grabbable world sock, and
+	# the throw pinged the noise bus (the whole point of throwing it).
+	var pings := [0]
+	var count_ping := func(_p: Vector3, _l: float) -> void: pings[0] += 1
+	NoiseBus.noise_emitted.connect(count_ping)
+	var before := _items.size()
+	_use_slot(0)
+	NoiseBus.noise_emitted.disconnect(count_ping)
+	var thrown: bool = _inv[0] == -1 and _items.size() == before + 1 and pings[0] >= 1
+
+	# Popper: she recoils on the spot, and when the recoil ends she goes for the
+	# bang. Park her FAR from the player first: point-blank she'd have line of
+	# sight and escalate straight to CHASE (also correct — the bang gave you
+	# away), which would make "did the flinch route her to the bang" ambiguous.
+	_monster.set_wake(0.0)
+	_monster.global_position = HouseSuburban.scaled(Vector3(6.0, 3.0, 4.0))  # office, upstairs
+	await get_tree().physics_frame
+	_inv[0] = Item.Kind.POPPER
+	var ppos := _player.global_position
+	_use_slot(0)
+	var flinched: bool = _monster._flinch_t > 0.0
+	_monster._flinch_t = 0.02   # fast-forward the recoil
+	for _i in 4:
+		await get_tree().physics_frame
+	# After the flinch she's hunting the bang: INVESTIGATE (or CHASE if she can
+	# already see you), with the bang as her last known position.
+	var hunting: bool = _monster._state == NoiseMonster.State.INVESTIGATE \
+		or _monster._state == NoiseMonster.State.CHASE
+	var investigates: bool = _monster._flinch_t <= 0.0 and hunting \
+		and _monster._last_known.distance_to(ppos) < 1.5
+
+	# Cocoon: both slots spill out beside the bag as world items.
+	_inv = [Item.Kind.SOCK, Item.Kind.KEYS]
+	var world_before := _live_item_count()
+	_cocoon_local()
+	var dropped: bool = _inv[0] == -1 and _inv[1] == -1 \
+		and _live_item_count() == world_before + 2
+	_player.rescue()
+
+	var ok := spawned and focus_item and picked and full_skips and thrown \
+		and flinched and investigates and dropped
+	print("[SELFTEST] items: spawned=%s pickup(focus=%s slot=%s) hands-full-skips=%s "
+		% [spawned, focus_item, picked, full_skips]
+		+ "throw=%s popper(flinch=%s investigates=%s) cocoon-drop=%s -> %s"
+		% [thrown, flinched, investigates, dropped, ok])
+	return ok
+
+func _live_item_count() -> int:
+	var n := 0
+	for it: Item in _items:
+		if not it.taken:
+			n += 1
+	return n
+
+## First person is a camera STATE, not a scene: blend in -> own bag hidden,
+## spring collapsed to the eyes; tumble -> forced back out, bag visible again.
+func _selftest_first_person() -> bool:
+	_player.rescue()
+	_first_person = true
+	for _i in 60:
+		_update_camera(1.0 / 30.0)
+	var fp_on := _fp_blend > 0.9 and not _player.visible and _spring.spring_length < 0.3
+	_player.state = SleepingBagPlayer.State.TUMBLED
+	for _i in 60:
+		_update_camera(1.0 / 30.0)
+	var tumble_forces_third := _fp_blend < 0.1 and _player.visible \
+		and _spring.spring_length > cam_distance * 0.8
+	_player.state = SleepingBagPlayer.State.NORMAL
+	_first_person = false
+	for _i in 60:
+		_update_camera(1.0 / 30.0)
+	var back_out := _player.visible and _fp_blend < 0.05
+	var ok := fp_on and tumble_forces_third and back_out
+	print("[SELFTEST] first-person: on(hidden+close)=%s tumble-forces-third=%s toggle-off=%s -> %s"
+		% [fp_on, tumble_forces_third, back_out, ok])
+	return ok
+
+## The keys chain: dog -> inventory -> the back door needs them TURNED.
+func _selftest_keys() -> bool:
+	_apply_phase(Phase.LOBBY, {})
+	_apply_phase(Phase.LIGHTS_OUT, {"objs": [{"id": "dog"}], "items": []})
+	_apply_phase(Phase.ROUND, {})
+	_player.rescue()
+	_inv = [-1, -1]
+	var dog_o: Objective = _objectives[0]
+	# Fake having the snack and stand at the dog: the hand-off must complete the
+	# task AND put HOUSE KEYS in a slot.
+	dog_o._has_snack = true
+	var dogpos: Vector3 = dog_o._dog.position
+	_player.global_position = dogpos
+	dog_o.try_interact(dogpos)
+	var got_keys := _inv_has(Item.Kind.KEYS)
+	var task_done := _done_ids.has("dog")
+	# Escape armed + task done used to be enough — now the blocker must HOLD
+	# until the keys turn.
+	_escape_armed = true
+	_refresh_exit_doors()
+	var shut_until_turned := _exit_door_locked("back_door") and not _exit_is_open("BACK DOOR")
+	# Walk to the door and turn them: door opens, keys are spent (in the lock).
+	var door_at := Vector3.ZERO
+	for e: Dictionary in HouseSuburban.exits():
+		if e["name"] == "BACK DOOR":
+			door_at = e["at"]
+	_player.global_position = door_at
+	_use_slot(_inv.find(Item.Kind.KEYS))
+	var turned := _keys_door_open and not _exit_door_locked("back_door") \
+		and not _inv_has(Item.Kind.KEYS)
+	# Setting keys down away from the door: a world keys item appears (hand-off).
+	_inv[0] = Item.Kind.KEYS
+	_player.global_position = HouseSuburban.scaled(Vector3(-5.0, 0.4, 3.5))
+	var live0 := _live_item_count()
+	_keys_door_open = false   # force the set-down branch even near nothing
+	_use_slot(0)
+	var setdown := _live_item_count() == live0 + 1 and not _inv_has(Item.Kind.KEYS)
+	_escape_armed = false
+	_keys_door_open = false
+	var ok := got_keys and task_done and shut_until_turned and turned and setdown
+	print("[SELFTEST] keys: dog-grants=%s task-done=%s door-holds-until-turned=%s turned-opens=%s set-down=%s -> %s"
+		% [got_keys, task_done, shut_until_turned, turned, setdown, ok])
+	return ok
+
 ## Audit: every gameplay anchor sits on solid floor at its expected height (no
 ## holes, no void). Returns false + prints the offenders if any anchor is unsupported.
 func _audit_anchors_on_floor() -> bool:
@@ -701,6 +887,7 @@ func _audit_anchors_on_floor() -> bool:
 	var pools := {
 		"clue": HouseSuburban.CLUE_SPOTS, "garage_clue": HouseSuburban.GARAGE_CLUE_SPOTS,
 		"breaker_diag": HouseSuburban.BREAKER_DIAGRAM_SPOTS, "glasses": HouseSuburban.GLASSES_SPOTS,
+		"item": HouseSuburban.ITEM_SPOTS,
 	}
 	for pool_name: String in pools:
 		var pool: Array = pools[pool_name]
@@ -855,6 +1042,85 @@ func _selftest_stairs() -> bool:
 		" | ".join(report), all_ok])
 	return all_ok
 
+## Hop economy, physically: a clutter pile refuses a shuffling bag and yields to
+## one running hop; a perch fragment is floor-unreachable and hop-reachable.
+func _selftest_hop_economy() -> bool:
+	var s := HouseSuburban.S
+	# A) Clutter (kitchen|living doorway, plan (-5.5,-1)) — crossed moving in z.
+	var c: Dictionary = HouseSuburban.CLUTTER[0]
+	var cx: float = c["at"].x * s
+	var cz: float = c["at"].y * s
+	# Shuffle straight at it for 3s: the pile must hold the line.
+	_reset_test_bag(Vector3(cx, 0.7, cz + 1.4))
+	_player.test_move = Vector3(0, 0, -1)   # push north into the pile
+	for _i in 180:
+		await get_tree().physics_frame
+	var blocked: bool = _player.global_position.z > cz - 0.1 \
+		and _player.stamina >= _player.stamina_max - 0.01
+	# Now a RUNNING hop — approach with speed and launch with a run-up gap so the
+	# bag is already airborne when it reaches the pile (launching pressed against
+	# it kills the forward momentum against its face).
+	_reset_test_bag(Vector3(cx, 0.7, cz + 2.4))
+	_player.test_move = Vector3(0, 0, -1)
+	var spent_one := false
+	for i in 220:
+		await get_tree().physics_frame
+		if not spent_one and _player.global_position.z < cz + 1.4:
+			_player._hop_queued = true
+		if _player.stamina <= _player.stamina_max - 0.5:
+			spent_one = true
+	var crossed: bool = _player.global_position.z < cz - 0.5
+
+	# B) Perch (living room crate). Landing a physics capsule on a 1.7m pad via a
+	# precise arc is non-deterministic (a player wouldn't nail it first try
+	# either), so prove the MECHANIC, not a trick shot: (1) the lore on top is
+	# unreachable from the floor beside it — the height gate holds; (2) a hop
+	# gains more than the perch height, so getting up is physically possible;
+	# (3) standing on the pad, it's in reach.
+	var top := HouseSuburban.scaled(HouseSuburban.perch_tops()[0])
+	var half := HouseSuburban.PERCH_W * 0.5
+	var fr := Fragment.new()
+	add_child(fr)
+	fr.setup({"id": "hop_test", "type": "crayon", "title": "t", "body": "b"}, top)
+	# (1) On the floor at the pad's edge: near in x/z, but the height gate denies.
+	_reset_test_bag(Vector3(top.x + half + 0.4, 0.7, top.z))
+	for _i in 20:
+		await get_tree().physics_frame
+	var floor_denied := not fr.near(_player.global_position)
+	# (2) A flat hop must apex above the perch top with margin to spare.
+	_reset_test_bag(HouseSuburban.scaled(Vector3(-5.0, 0.4, 3.5)))
+	for _i in 20:
+		await get_tree().physics_frame
+	var floor_y: float = _player.global_position.y
+	_player._hop_queued = true
+	var apex := floor_y
+	for _i in 90:
+		await get_tree().physics_frame
+		apex = maxf(apex, _player.global_position.y)
+	var hop_clears: bool = (apex - floor_y) > HouseSuburban.PERCH_H + 0.15
+	# (3) Standing ON the pad, the fragment is in reach.
+	_reset_test_bag(Vector3(top.x, top.y + 0.5, top.z))
+	for _i in 30:
+		await get_tree().physics_frame
+	var top_reaches := fr.near(_player.global_position)
+	fr.queue_free()
+	_player.test_move = Vector3.ZERO
+	var ok := blocked and crossed and spent_one and floor_denied and hop_clears and top_reaches
+	print("[SELFTEST] hop-economy: clutter(shuffle-blocked=%s hop-crosses=%s cost-1=%s) "
+		% [blocked, crossed, spent_one]
+		+ "perch(floor-denied=%s hop-clears-height=%s reach-on-top=%s) -> %s"
+		% [floor_denied, hop_clears, top_reaches, ok])
+	return ok
+
+func _reset_test_bag(at: Vector3) -> void:
+	_player.freeze = false
+	_player.state = SleepingBagPlayer.State.NORMAL
+	_player.linear_velocity = Vector3.ZERO
+	_player.angular_velocity = Vector3.ZERO
+	_player.global_position = at
+	_player.stamina = _player.stamina_max
+	_player.test_move = Vector3.ZERO
+
 ## Selftest helper: complete one drawn door-objective, then fill to 3 total, and
 ## return the exit that opened (a door-objective is always in a 5-of-6 draw).
 func _selftest_arm_via_door() -> String:
@@ -869,6 +1135,11 @@ func _selftest_arm_via_door() -> String:
 			break
 		if not _done_ids.has(o.def.id):
 			_authoritative_complete(o.def.id)
+	# The BACK DOOR is deliberately NOT cracked by completing The Dog alone — the
+	# hand-off gives you the keys and you must carry them to its lock. That's the
+	# whole keys mechanic, so the winnable path here includes turning them.
+	if opened == "BACK DOOR":
+		_apply_keys_turned()
 	return opened
 
 ## Selftest helper: teleport to `exit_name`'s zone and trigger the escape check.
@@ -985,7 +1256,7 @@ func _build_hud() -> void:
 	add_child(layer)
 
 	var help := Label.new()
-	help.text = "WASD shuffle   Space hop   E interact   Q look back   V talk   M mic mode   F3 debug   Esc cursor"
+	help.text = "WASD shuffle   Space hop   E interact   1/2 use items   C camera   Q look back   V talk   M mic   Esc pause"
 	help.position = Vector2(16, 12)
 	layer.add_child(help)
 
@@ -1102,6 +1373,15 @@ void fragment() {
 		pip.color = PIP_ON
 		pip_row.add_child(pip)
 		_pips.append(pip)
+
+	# The 2-slot inventory, bottom-left. Text-only gray-box: "[1] SOCK BALL".
+	_inv_label = Label.new()
+	_inv_label.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_inv_label.position = Vector2(16, -40)
+	_inv_label.add_theme_font_size_override("font_size", 16)
+	_inv_label.add_theme_color_override("font_color", Color(0.85, 0.85, 0.8))
+	layer.add_child(_inv_label)
+	_refresh_inv_hud()
 
 	# Cocooned: near-black fabric dark + instructions. Placeholder first-person.
 	_cocoon_overlay = ColorRect.new()
@@ -1223,6 +1503,10 @@ func _enter_lobby() -> void:
 	_reset_cocoon_ui()
 	_clear_objectives()
 	_clear_fragments()
+	_clear_items()
+	_inv = [-1, -1]
+	_keys_door_open = false
+	_refresh_inv_hud()
 	_set_exits_locked(true)
 	_player.respawn()
 	_monster.respawn()
@@ -1276,7 +1560,9 @@ func _host_start_round() -> void:
 	var spawn := _pick_monster_spawn(anchors)
 	# Lore fragments share the clue-spawn anchors, so lore-hunting = objective risk.
 	var frags := _pick_fragments(anchors)
-	var data := {"objs": objs, "blurred": blurred, "monster_spawn": spawn, "frags": frags}
+	var items := _pick_items()
+	var data := {"objs": objs, "blurred": blurred, "monster_spawn": spawn,
+		"frags": frags, "items": items}
 	_apply_phase(Phase.LIGHTS_OUT, data)
 	if _net_connected():
 		_net_phase.rpc(Phase.LIGHTS_OUT, data)
@@ -1353,6 +1639,24 @@ func _pick_fragments(used: Array[Vector3]) -> Array:
 		si += 1
 	return out
 
+## Host: scatter this round's loose items over the ITEM_SPOTS pool — a few sock
+## balls and (scarce, on purpose) a party popper. Uids come from the host counter
+## so throws can mint fresh ones without colliding.
+func _pick_items() -> Array:
+	var spots: Array = HouseSuburban.ITEM_SPOTS.duplicate()
+	spots.shuffle()
+	var out: Array = []
+	var kinds: Array[int] = []
+	for _i in item_sock_count:
+		kinds.append(Item.Kind.SOCK)
+	for _i in item_popper_count:
+		kinds.append(Item.Kind.POPPER)
+	for i in mini(kinds.size(), spots.size()):
+		out.append({"uid": _item_uid_next, "kind": kinds[i],
+			"at": HouseSuburban.scaled(spots[i])})
+		_item_uid_next += 1
+	return out
+
 func _anchor_taken(p: Vector3, used: Array[Vector3]) -> bool:
 	for u: Vector3 in used:
 		if p.distance_to(u) < 1.0:
@@ -1384,6 +1688,7 @@ func _apply_phase(p: Phase, data: Dictionary) -> void:
 			_phase_timer = lights_out_duration
 			_setup_objectives(data)
 			_setup_fragments(data)
+			_setup_items(data)
 			_player.respawn()
 			# Same on host + client (same data): the monster's LIGHTS-OUT spawn.
 			if data.has("monster_spawn"):
@@ -1575,6 +1880,7 @@ func _setup_objectives(data: Dictionary) -> void:
 		o.revealed.connect(_on_objective_revealed)
 		o.action_noise.connect(func(pos: Vector3, loud: float) -> void: NoiseBus.emit_noise(pos, loud))
 		o.toast.connect(func(t: String) -> void: _show_toast(t, 5.0))
+		o.keys_granted.connect(_on_keys_granted)
 		_objectives.append(o)
 	# Blur the assigned player's screen until they find their glasses — but ONLY
 	# with 2+ players (the handicap needs teammates to describe the room). Solo,
@@ -1667,6 +1973,297 @@ func _apply_fragment_collected(id: String, by_pid: int) -> void:
 		_show_toast("A fragment was found: %s" % fdata.get("title", "?"), 3.0)
 	print("[NETTEST] fragment collected: %s by=%d (%d/%d)" % [
 		id, by_pid, _collected_this_round(), _frag_spawned])
+
+# ── Items & the 2-slot inventory ───────────────────────────────────────────
+# World items mirror the fragment flow (host round data -> identical props on
+# every peer -> host-authoritative first-claim-wins). The inventory is LOCAL:
+# only which WORLD items exist is synced; what's in your bag is your business
+# until you use it, which is always a world-visible (and audible) act.
+
+func _setup_items(data: Dictionary) -> void:
+	_unzip_item = null
+	_clear_items()
+	_inv = [-1, -1]
+	_keys_door_open = false
+	for entry: Dictionary in data.get("items", []):
+		_spawn_item(int(entry.get("uid", -1)), int(entry.get("kind", 0)),
+			entry.get("at", Vector3.ZERO))
+	_refresh_inv_hud()
+	print("[NETTEST] items spawned=%d" % _items.size())
+
+func _spawn_item(uid: int, kind: int, at: Vector3) -> Item:
+	var it := Item.new()
+	add_child(it)
+	it.setup(uid, kind, at)
+	_items.append(it)
+	return it
+
+func _clear_items() -> void:
+	for it: Item in _items:
+		it.queue_free()
+	_items.clear()
+
+func _item_by_uid(uid: int) -> Item:
+	for it: Item in _items:
+		if it.uid == uid:
+			return it
+	return null
+
+func _inv_free_slot() -> int:
+	return _inv.find(-1)
+
+func _inv_has(kind: int) -> bool:
+	return _inv.has(kind)
+
+## Local player finished the unzip on a world item: ask the host to commit the
+## claim. NOT optimistic — two players can race for the same sock, and a sock
+## that exists in two inventories is a desync you can hear.
+func _finish_item_pickup(it: Item) -> void:
+	if it == null or it.taken or _inv_free_slot() == -1:
+		return
+	if _is_authority():
+		_authoritative_take_item(it.uid, _my_id())
+	else:
+		_net_request_take_item.rpc_id(1, it.uid)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _net_request_take_item(uid: int) -> void:
+	if _is_authority():
+		_authoritative_take_item(uid, multiplayer.get_remote_sender_id())
+
+func _authoritative_take_item(uid: int, by_pid: int) -> void:
+	var it := _item_by_uid(uid)
+	if it == null or it.taken:
+		return  # already claimed — the loser's E press just fizzles
+	_apply_item_taken(uid, by_pid)
+	if _net_connected():
+		_net_item_taken.rpc(uid, by_pid)
+
+@rpc("authority", "call_remote", "reliable")
+func _net_item_taken(uid: int, by_pid: int) -> void:
+	_apply_item_taken(uid, by_pid)
+
+func _apply_item_taken(uid: int, by_pid: int) -> void:
+	var it := _item_by_uid(uid)
+	if it == null or it.taken:
+		return
+	it.mark_taken()
+	if by_pid == _my_id():
+		var slot := _inv_free_slot()
+		if slot != -1:
+			_inv[slot] = it.kind
+			_show_toast("%s  —  press %d to use" % [it.display_name(), slot + 1], 3.5)
+		_refresh_inv_hud()
+	print("[NETTEST] item taken: uid=%d kind=%d by=%d" % [uid, it.kind, by_pid])
+
+## Drop everything where you stand — called on cocoon. Keys hitting the floor
+## next to a caught friend is the recover-the-keys beat, not a fail state.
+func _drop_inventory() -> void:
+	for slot in _inv.size():
+		if _inv[slot] != -1:
+			_request_spawn_item(_inv[slot], _player.global_position
+				+ Vector3(0.4 * (slot * 2 - 1), 0.05, 0.3))
+			_inv[slot] = -1
+	_refresh_inv_hud()
+
+## Anyone can ask the host to materialize a world item (drops, thrown landings).
+## The host mints the uid so two peers can never invent the same one.
+func _request_spawn_item(kind: int, at: Vector3) -> void:
+	if _is_authority():
+		_authoritative_spawn_item(kind, at)
+	else:
+		_net_request_spawn_item.rpc_id(1, kind, at)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _net_request_spawn_item(kind: int, at: Vector3) -> void:
+	if _is_authority():
+		_authoritative_spawn_item(kind, at)
+
+func _authoritative_spawn_item(kind: int, at: Vector3) -> void:
+	var uid := _item_uid_next
+	_item_uid_next += 1
+	_spawn_item(uid, kind, at)
+	if _net_connected():
+		_net_item_spawned.rpc(uid, kind, at)
+
+@rpc("authority", "call_remote", "reliable")
+func _net_item_spawned(uid: int, kind: int, at: Vector3) -> void:
+	_spawn_item(uid, kind, at)
+
+# ── Using items (keys 1 / 2) ───────────────────────────────────────────────
+
+func _use_slot(slot: int) -> void:
+	if phase != Phase.ROUND or _player.state == SleepingBagPlayer.State.COCOONED:
+		return
+	var kind := _inv[slot]
+	match kind:
+		Item.Kind.SOCK:
+			_inv[slot] = -1
+			_throw_sock()
+		Item.Kind.POPPER:
+			_inv[slot] = -1
+			_use_popper()
+		Item.Kind.KEYS:
+			if _near_back_door() and not _keys_door_open:
+				# The payoff of the whole carry: turn them in the lock. They stay
+				# in the door — the slot is free again, but so is the way out.
+				_inv[slot] = -1
+				_request_keys_turned()
+			else:
+				# Anywhere else is "set them down" — the deliberate hand-off to a
+				# faster friend, at the cost of keys lying on the floor.
+				_inv[slot] = -1
+				_request_spawn_item(Item.Kind.KEYS,
+					_player.global_position + _player.facing * 0.6 + Vector3.UP * 0.05)
+				_show_toast("You set the keys down.", 2.5)
+		_:
+			return
+	_refresh_inv_hud()
+
+## The sock throw: noise SOMEWHERE ELSE, the only verb that turns the monster's
+## hearing into a tool. Landing point is decided at throw time (deterministic
+## for everyone), the flight is just a visual.
+func _throw_sock() -> void:
+	var from := _player.global_position + Vector3.UP * 0.7
+	var land := _sock_landing(from, _player.facing)
+	_animate_throw(from, land)
+	# Only the thrower emits — NoiseBus already relays client pings to the host,
+	# so if every peer emitted, the monster would hear one throw N times.
+	NoiseBus.emit_noise(land, sock_loudness)
+	SoundKit.play_at(self, land, "thump")
+	_request_spawn_item(Item.Kind.SOCK, land)   # re-grabbable where it lands
+	if _net_connected():
+		_net_sock_thrown.rpc(from, land)
+	print("[NETTEST] sock thrown to %v" % land)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _net_sock_thrown(from: Vector3, land: Vector3) -> void:
+	_animate_throw(from, land)   # visual only; the thrower already emitted noise
+
+## Where a sock thrown from `from` toward `dir` ends up: march the throw range in
+## steps, raycasting down; stop early if a wall blocks the segment. Gray-box
+## ballistics — flat range + floor snap reads fine at bag scale.
+func _sock_landing(from: Vector3, dir: Vector3) -> Vector3:
+	var flat := Vector3(dir.x, 0.0, dir.z).normalized()
+	if flat == Vector3.ZERO:
+		flat = Vector3.FORWARD
+	var space := get_world_3d().direct_space_state
+	var target := from + flat * sock_throw_range
+	# Wall between us and the far point shortens the throw to just before it.
+	var wall := space.intersect_ray(PhysicsRayQueryParameters3D.create(from, target, 1))
+	if wall:
+		target = wall["position"] - flat * 0.3
+	var drop := space.intersect_ray(PhysicsRayQueryParameters3D.create(
+		target + Vector3.UP * 0.5, target + Vector3.DOWN * 8.0, 1))
+	if drop:
+		return drop["position"] + Vector3.UP * 0.05
+	return Vector3(target.x, from.y - 0.7, target.z)  # no floor found: land flat
+
+## A small tween arc — pure garnish, the landing is already decided.
+func _animate_throw(from: Vector3, land: Vector3) -> void:
+	var ball := MeshInstance3D.new()
+	var m := SphereMesh.new()
+	m.radius = 0.12
+	m.height = 0.2
+	ball.mesh = m
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Item.DEFS[Item.Kind.SOCK]["color"]
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	ball.set_surface_override_material(0, mat)
+	add_child(ball)
+	ball.global_position = from
+	var mid := (from + land) * 0.5 + Vector3.UP * 1.6
+	var dur := clampf(from.distance_to(land) / 9.0, 0.25, 0.9)
+	var step := func(t: float) -> void:
+		# Quadratic bezier: from -> mid -> land.
+		var a := from.lerp(mid, t)
+		var b := mid.lerp(land, t)
+		ball.global_position = a.lerp(b, t)
+	var tw := create_tween()
+	tw.tween_method(step, 0.0, 1.0, dur)
+	tw.tween_callback(ball.queue_free)
+
+## The party popper: a bang at YOUR feet. She flinches mid-lunge — and now she
+## knows exactly where you are. An exchange, not an escape button.
+func _use_popper() -> void:
+	var pos := _player.global_position
+	NoiseBus.emit_noise(pos, popper_loudness)
+	SoundKit.play_at(self, pos, "pop")
+	_show_toast("*POP* — she flinches!", 2.5)
+	if _is_authority():
+		_monster.flinch(pos, popper_flinch_secs)
+	else:
+		_net_popper_used.rpc_id(1, pos)
+	print("[NETTEST] popper used at %v" % pos)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _net_popper_used(pos: Vector3) -> void:
+	if _is_authority():
+		_monster.flinch(pos, popper_flinch_secs)
+
+# ── The house keys (DOG hand-off -> carried -> turned in the back door) ────
+
+## The dog hand-off ran on THIS machine (interaction is local), so the keys land
+## in THIS inventory. Hands full: they drop at the dog's feet instead — still in
+## the world, still somebody's problem.
+func _on_keys_granted(at: Vector3) -> void:
+	var slot := _inv_free_slot()
+	if slot != -1:
+		_inv[slot] = Item.Kind.KEYS
+		_refresh_inv_hud()
+		_show_toast("THE DOG GIVES UP THE KEYS — carry them to the BACK DOOR (press %d there)."
+			% (slot + 1), 6.0)
+	else:
+		_request_spawn_item(Item.Kind.KEYS, at + Vector3(0.4, 0.05, 0.0))
+		_show_toast("The dog drops the keys at your feet — your hands are full!", 5.0)
+	print("[NETTEST] keys granted (slot=%d)" % slot)
+
+func _near_back_door() -> bool:
+	for e: Dictionary in HouseSuburban.exits():
+		if e["name"] == "BACK DOOR":
+			return _player.global_position.distance_to(e["at"]) < 3.0
+	return false
+
+func _request_keys_turned() -> void:
+	if _is_authority():
+		_authoritative_keys_turned()
+	else:
+		_net_request_keys_turned.rpc_id(1)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _net_request_keys_turned() -> void:
+	if _is_authority():
+		_authoritative_keys_turned()
+
+func _authoritative_keys_turned() -> void:
+	if _keys_door_open:
+		return
+	_apply_keys_turned()
+	if _net_connected():
+		_net_keys_turned.rpc()
+
+@rpc("authority", "call_remote", "reliable")
+func _net_keys_turned() -> void:
+	_apply_keys_turned()
+
+func _apply_keys_turned() -> void:
+	_keys_door_open = true
+	_refresh_exit_doors()
+	_refresh_inv_hud()
+	SoundKit.play_at(self, _player.global_position, "click")
+	_show_toast("*click* — the keys turn. They stay in the back door lock.", 4.0)
+	print("[NETTEST] keys turned in the back door")
+
+func _refresh_inv_hud() -> void:
+	if _inv_label == null:
+		return
+	var parts: Array[String] = []
+	for slot in _inv.size():
+		if _inv[slot] == -1:
+			parts.append("[%d] —" % (slot + 1))
+		else:
+			parts.append("[%d] %s" % [slot + 1, Item.kind_name(_inv[slot])])
+	_inv_label.text = "  ".join(parts)
 
 func _show_fragment(fr: Fragment) -> void:
 	# The reader overlay: title + body, held briefly. Tapes "play" (procedural
@@ -1771,10 +2368,17 @@ func _exit_for_objective(id: String) -> String:
 			return name
 	return ""
 
-## An exit is open when its required objective is completed.
+## An exit is open when its required objective is completed. The BACK DOOR is
+## special: finishing The Dog doesn't unlock anything — it hands somebody the
+## HOUSE KEYS, and the door only counts as open once those keys have physically
+## been TURNED in its lock (see _use_slot / _authoritative_keys_turned).
 func _exit_is_open(exit_name: String) -> bool:
 	var need: String = EXIT_OBJECTIVE.get(exit_name, "")
-	return need != "" and _done_ids.has(need)
+	if need == "" or not _done_ids.has(need):
+		return false
+	if exit_name == "BACK DOOR":
+		return _keys_door_open
+	return true
 
 func _open_exit_names() -> Array[String]:
 	var out: Array[String] = []
@@ -1872,6 +2476,10 @@ func _cocoon_local() -> void:
 	_player.cocoon()
 	_unzip_target = null  # a caught player can't be mid-unzip
 	_unzip_frag = null
+	_unzip_item = null
+	# Everything you were carrying spills out beside the bag. Keys on the floor
+	# next to a caught friend = the recover-the-keys beat.
+	_drop_inventory()
 	_cocoon_cam = 1.0
 	_cocoon_overlay.visible = true
 	(_cocoon_overlay as ColorRect).color.a = 0.35  # fades up to full in _process
@@ -2034,6 +2642,10 @@ func _unhandled_input(event: InputEvent) -> void:
 				# it in the viewport and it never reaches _unhandled_input. That
 				# left cocooned players pressing a key that did literally nothing.
 				_toggle_spectate()
+			KEY_C:
+				_first_person = not _first_person
+				_show_toast("CAMERA: %s" % ("FIRST PERSON" if _first_person
+					else "THIRD PERSON"), 2.0)
 			KEY_BRACKETLEFT:
 				_cycle_spectate(-1)
 			KEY_BRACKETRIGHT:
@@ -2041,9 +2653,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			_:
 				var digit := _keycode_to_digit(event.keycode)
 				if digit != -1:
+					# An open dial/keypad panel owns the digits outright — you
+					# can't accidentally hurl a sock while entering the code.
 					var entry := _active_entry()
 					if entry != null:
 						entry.on_key(digit)
+					elif digit == 1 or digit == 2:
+						_use_slot(digit - 1)
 	elif event is InputEventMouseButton and event.pressed:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
@@ -2080,6 +2696,15 @@ func _interact_focus() -> Dictionary:
 			var d := p.distance_to(fr.position)
 			if d < float(out["dist"]):
 				out = {"kind": "fragment", "obj": null, "frag": fr, "dist": d}
+	# World items join the same nearest-wins arbitration. A full inventory takes
+	# them out of the running entirely, so a sock at your feet can't shadow the
+	# keypad behind it when you couldn't pick the sock up anyway.
+	if _inv_free_slot() != -1:
+		for it: Item in _items:
+			if it.near(p):
+				var d := p.distance_to(it.position)
+				if d < float(out["dist"]):
+					out = {"kind": "item", "obj": null, "frag": null, "item": it, "dist": d}
 	return out
 
 func _try_interact_press() -> void:
@@ -2087,7 +2712,7 @@ func _try_interact_press() -> void:
 		print("[PLAYTEST] E ignored: phase=%d cocooned=%s"
 			% [phase, _player.state == SleepingBagPlayer.State.COCOONED])
 		return
-	if _unzip_target != null or _unzip_frag != null:
+	if _unzipping():
 		return  # already unzipping
 	var p := _player.global_position
 	var focus := _interact_focus()
@@ -2097,6 +2722,8 @@ func _try_interact_press() -> void:
 			print("[PLAYTEST] E -> rescue (%.2fm)" % float(focus["dist"]))
 		"fragment":
 			_begin_unzip(null, focus["frag"] as Fragment)
+		"item":
+			_begin_unzip_item(focus["item"] as Item)
 		"objective":
 			var o := focus["obj"] as Objective
 			# Grabbing a clue/item means unzipping the bag: a slow, loud hold-E
@@ -2111,6 +2738,7 @@ func _try_interact_press() -> void:
 func _begin_unzip(o: Objective, fr: Fragment) -> void:
 	_unzip_target = o
 	_unzip_frag = fr
+	_unzip_item = null
 	_unzip_t = 0.0
 	_unzip_panic = _monster_fx_state >= NoiseMonster.State.CHASE
 	_unzip_dur = unzip_secs + (unzip_chase_penalty if _unzip_panic else 0.0)
@@ -2118,8 +2746,17 @@ func _begin_unzip(o: Objective, fr: Fragment) -> void:
 	NoiseBus.emit_noise(_player.global_position, unzip_loudness)
 	SoundKit.play_at(self, _player.global_position, "zipper")
 
+## Items ride the same channel: reaching out of the bag is always slow and loud,
+## whether it's for a clue, a lore tape, or somebody's sock.
+func _begin_unzip_item(it: Item) -> void:
+	_begin_unzip(null, null)
+	_unzip_item = it
+
+func _unzipping() -> bool:
+	return _unzip_target != null or _unzip_frag != null or _unzip_item != null
+
 func _update_unzip(delta: float) -> void:
-	if _unzip_target == null and _unzip_frag == null:
+	if not _unzipping():
 		return
 	var p := _player.global_position
 	# Cancel on release, cocoon, or moving off the target; the grab is not committed
@@ -2127,10 +2764,12 @@ func _update_unzip(delta: float) -> void:
 	var still_valid := Input.is_key_pressed(KEY_E) \
 		and _player.state != SleepingBagPlayer.State.COCOONED \
 		and ((_unzip_target != null and _unzip_target.grab_available(p)) \
-			or (_unzip_frag != null and _unzip_frag.near(p)))
+			or (_unzip_frag != null and _unzip_frag.near(p)) \
+			or (_unzip_item != null and _unzip_item.near(p)))
 	if not still_valid:
 		_unzip_target = null
 		_unzip_frag = null
+		_unzip_item = null
 		return
 	_unzip_t += delta
 	if _unzip_t >= _unzip_dur:
@@ -2138,8 +2777,11 @@ func _update_unzip(delta: float) -> void:
 			_unzip_target.try_interact(p)  # zipped open — grab it now
 		elif _unzip_frag != null:
 			_finish_fragment_pickup(_unzip_frag)
+		elif _unzip_item != null:
+			_finish_item_pickup(_unzip_item)
 		_unzip_target = null
 		_unzip_frag = null
+		_unzip_item = null
 
 # ── Frame loop ─────────────────────────────────────────────────────────────
 
@@ -2244,6 +2886,10 @@ func _update_prompts() -> void:
 			_prompt_label.text = "✦ %s  (hold E: unzip)" \
 				% (focus["frag"] as Fragment).frag_type().to_upper()
 			return
+		"item":
+			_prompt_label.text = "%s  (hold E: unzip)" \
+				% (focus["item"] as Item).display_name()
+			return
 		"objective":
 			var fo := focus["obj"] as Objective
 			var fpr := fo.prompt(p)
@@ -2258,6 +2904,18 @@ func _update_prompts() -> void:
 		if pr != "":
 			_prompt_label.text = pr
 			return
+	# Carrying the keys at the back door: say the magic words.
+	if not _keys_door_open and _near_back_door():
+		var kslot := _inv.find(Item.Kind.KEYS)
+		if kslot != -1:
+			_prompt_label.text = "HOUSE KEYS — press %d to unlock the back door" % (kslot + 1)
+			return
+	# An item in reach with both hands full still deserves an explanation.
+	if _inv_free_slot() == -1:
+		for it: Item in _items:
+			if it.near(p):
+				_prompt_label.text = "%s — hands full (use 1 or 2 first)" % it.display_name()
+				return
 
 func _update_tracker() -> void:
 	# WHAT + WHETHER, never WHERE. Name + state only; the action detail (what to
@@ -2495,7 +3153,7 @@ func _update_camera(delta: float) -> void:
 	# Cocoon snap: the chase cam is killed INSTANTLY (no ease) and the camera is
 	# pulled inside the bag so the fabric-dark overlay fills the screen. Snapped in
 	# _cocoon_local; here we just hold it and ease back OUT on rescue.
-	# Spectating a teammate (cocooned + TAB): normal chase cam on THEIR bag, and the
+	# Spectating a teammate (cocooned + F): normal chase cam on THEIR bag, and the
 	# fabric-dark overlay lifts so you can actually watch.
 	var watch := _spectate_target()
 	if watch != null:
@@ -2506,12 +3164,26 @@ func _update_camera(delta: float) -> void:
 		_cocoon_overlay.visible = true
 	else:
 		_cocoon_cam = move_toward(_cocoon_cam, 0.0, delta * 4.0)
-	_spring.spring_length = lerpf(cam_distance, 0.12, _cocoon_cam)
-	var h := lerpf(cam_height, 0.35, _cocoon_cam)
+	# First person (toggle C): opt-in, and FORCED back to third the moment you
+	# tumble — a spinning first-person face-plant is a nausea machine, and the
+	# tumble is also the comedy beat you're supposed to SEE. Third stays the
+	# default identity view: you watch your own googly-eyed bag be a bag.
+	var fp_active := _first_person and not cocooned and watch == null \
+		and _player.state != SleepingBagPlayer.State.TUMBLED
+	_fp_blend = move_toward(_fp_blend, 1.0 if fp_active else 0.0, delta * 6.0)
+	# Your own bag disappears only when the camera is fully inside it — mid-blend
+	# you'd see your own fabric whip past, which reads as a glitch.
+	_player.visible = _fp_blend < 0.85
+	_spring.position.x = cam_shoulder * (1.0 - _fp_blend)
+	_spring.spring_length = lerpf(lerpf(cam_distance, 0.05, _fp_blend), 0.12, _cocoon_cam)
+	var h := lerpf(lerpf(cam_height, 0.78, _fp_blend), 0.35, _cocoon_cam)
 	var follow: Vector3 = watch.global_position if watch != null else _player.global_position
 	var target := follow + Vector3.UP * h
+	# In first person the pivot must track the body hard, or your eyes drag
+	# behind your own movement.
+	var track := lerpf(12.0, 30.0, _fp_blend)
 	_cam_pivot.global_position = _cam_pivot.global_position.lerp(
-		target, clampf(12.0 * delta, 0.0, 1.0))
+		target, clampf(track * delta, 0.0, 1.0))
 	_cam_pivot.rotation.y = _yaw + _lookback * PI
 	_cam_pitch.rotation.x = _pitch
 	var dist := _player.global_position.distance_to(_monster.global_position)

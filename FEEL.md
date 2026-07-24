@@ -503,6 +503,55 @@ Three rules that all exist because a live playtest broke them:
   ghost state hasn't arrived yet is not a caught teammate. Ending a round on absent data
   is the worst possible false positive.
 
+## Items + the 2-slot inventory (`games/sleepover/Item.gd`, `Main.gd`)
+Two slots. That's the whole design: the keys take one, so every sock you hoard is a
+**choice**. Item pickups ride the same nearest-wins E arbitration and the same slow, loud
+unzip channel as clue grabs — reaching out of the bag is always a commitment. World items
+are host-authoritative like fragments (first claim wins; a sock that lived in two
+inventories would be a desync you can *hear*). Getting cocooned **spills both slots** onto
+the floor beside your bag — keys on the ground next to a caught friend is the
+recover-the-keys beat, not a fail state. Use a slot with **1** / **2** (a live keypad
+panel owns the digits first, so you can't hurl a sock mid-code).
+
+- **Sock ball** — the only verb that turns the monster's *hearing* into a tool. Thrown, it
+  arcs to a landing point (decided at throw time, deterministic for everyone; the flight is
+  garnish), pings `NoiseBus` **there**, and stays on the floor to be re-grabbed. Noise
+  somewhere else, on purpose.
+- **Party popper** — one-time. `Monster.flinch()`: she recoils in place ~2s, any lunge in
+  flight cancelled — and the recoil ends in an INVESTIGATE of the bang, i.e. exactly where
+  you were standing. An **exchange, not an escape button**: it buys distance at the price
+  of telling her where you are. Scarce on purpose (`item_popper_count` = 1/round).
+- **House keys** — The Dog hand-off no longer unlocks anything; it drops the keys into the
+  feeder's inventory (`keys_granted`). You carry them (a whole slot) to the BACK DOOR and
+  turn them in the lock (`_keys_door_open`); *that* is what opens it, even once escape is
+  armed. Winnability invariant still holds — any 3 completions include a door-objective,
+  and if that door is the back door the keys the dog just gave you are the key that opens
+  it. Dropping them (or getting caught) leaves them on the floor for anyone to carry.
+
+## First-person toggle (`Main._update_camera`)
+**C** flips first/third; third is the default and your identity view — you watch your own
+googly-eyed bag *be a bag*. First person is opt-in and **forced back to third the moment
+you tumble** (a spinning first-person face-plant is a nausea machine, and the pratfall is
+the comedy beat you're meant to see) or get cocooned/spectate. Your own bag mesh hides only
+when the camera is fully inside it (`_fp_blend >= 0.85`), so you never see your own fabric
+whip past mid-blend.
+
+## Hop economy — perches & clutter (`HouseSuburban`, `Fragment`)
+Stairs made hops a *choice* again; these make the choice interesting. **The rule: hops gate
+shortcuts and OPTIONAL loot, NEVER a required objective.** Measured flat hop apex is
+**0.82 m**, and both props are tuned against that number by the `hop-economy` physics test:
+
+- **Perches** — crate furniture (0.5 m tall, 1.7 m pad) with a lore fragment on **top**.
+  `Fragment.near()` carries a height gate (your grab must come from at-or-above the
+  fragment), so you cannot fish it off the floor — you hop up. Optional risk/reward only;
+  objective clues never spawn on a perch.
+- **Clutter** — toy piles (0.4 m tall) parked in a doorway. Tall enough to wedge a
+  shuffling bag, but a **thin hurdle** (0.35 m deep) in the travel axis so a *running* hop
+  sails over — a deep pile is a wall (launch pressed against its face and the collision
+  eats your forward momentum before you clear the top). Every cluttered doorway belongs to
+  a room **loop** whose other door stays clear, and the monster routes around it on the
+  navmesh, so the hop buys **seconds, never passage**.
+
 ## Pause + getting out (`core/ui/AppRoot.gd`)
 **Esc → RESUME · SETTINGS · LEAVE GAME**, drawn over the live 3D world.
 

@@ -66,6 +66,8 @@ var _lunge_dir: Vector3 = Vector3.ZERO
 var _lunge_traveled: float = 0.0
 var _lunge_cd: float = 0.0
 var _last_ping_pos: Vector3 = Vector3.ZERO
+var _flinch_t: float = 0.0                 ## party popper recoil (secs left)
+var _flinch_at: Vector3 = Vector3.ZERO     ## where the bang was — investigated after
 
 # Path following (manual — see _repath; NavigationAgent3D deadlocks descents)
 var _path: PackedVector3Array = []
@@ -191,9 +193,21 @@ func set_solo(is_solo: bool) -> void:
 	hearing_radius = _base_hearing * (solo_hearing_mult if is_solo else 1.0)
 	chase_memory = solo_chase_memory if is_solo else _base_chase_memory
 
+## Party popper went off at `at`. Only meaningful awake; a lunge in flight is
+## cancelled outright (that's the clutch use), and the recoil ends in an
+## INVESTIGATE of the bang — she now knows exactly where you were.
+func flinch(at: Vector3, dur: float) -> void:
+	if _asleep:
+		return
+	_flinch_t = dur
+	_flinch_at = at
+	_shush.play()   # a sharp offended "shh!"
+	print("[NETTEST] monster flinched (%.1fs) at %v" % [dur, at])
+
 func respawn() -> void:
 	global_transform = _spawn
 	visible = true  # in case it withdrew at the end of the last round
+	_flinch_t = 0.0
 	_floor_dwell = 0.0
 	_patrol_floor = -1
 	_set_state(State.PATROL)
@@ -343,6 +357,20 @@ func _physics_process(delta: float) -> void:
 		return
 
 	_lunge_cd = maxf(_lunge_cd - delta, 0.0)
+
+	# Flinched (party popper): she recoils in place — no movement, no sight, any
+	# lunge cancelled. It's an EXCHANGE, not an escape button: when it ends she
+	# investigates the bang, which is exactly where you were standing.
+	if _flinch_t > 0.0:
+		_flinch_t -= delta
+		_move_dir = Vector3.ZERO
+		_body.scale.y = lerpf(_body.scale.y, 0.72, clampf(8.0 * delta, 0.0, 1.0))
+		if _flinch_t <= 0.0:
+			_last_known = _flinch_at
+			_dwell = 0.0
+			_set_state(State.INVESTIGATE)
+		return
+
 	_check_sight(delta)
 
 	var goal := global_position
