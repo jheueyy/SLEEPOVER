@@ -17,6 +17,8 @@ var _ui_layer: CanvasLayer
 var _menu: Control
 var _lobby: Control
 var _settings: Control
+var _pause: Control
+var _menu_bg: ColorRect
 var _menu_status: Label
 var _code_entry: LineEdit
 var _roster_box: VBoxContainer
@@ -36,6 +38,7 @@ func _ready() -> void:
 	SteamManager.lobby_failed.connect(_on_lobby_failed)
 	LobbyManager.roster_changed.connect(_refresh_roster)
 	LobbyManager.game_started.connect(_on_game_started)
+	multiplayer.server_disconnected.connect(_on_server_disconnected)
 
 	_build_ui()
 
@@ -57,12 +60,19 @@ func _ready() -> void:
 
 func _build_ui() -> void:
 	_ui_layer = CanvasLayer.new()
+	# Above the game's own HUD layer, which is added later and would otherwise
+	# draw on top of the pause menu.
+	_ui_layer.layer = 10
 	add_child(_ui_layer)
 
-	var bg := ColorRect.new()
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	bg.color = Color(0.05, 0.05, 0.08)
-	_ui_layer.add_child(bg)
+	# The opaque background is what used to force hiding this ENTIRE layer in
+	# GAME — which is why there could be no pause menu. Only the background is
+	# state-dependent now; the layer itself stays up so panels can overlay the
+	# live 3D world.
+	_menu_bg = ColorRect.new()
+	_menu_bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_menu_bg.color = Color(0.05, 0.05, 0.08)
+	_ui_layer.add_child(_menu_bg)
 
 	_menu = _build_menu()
 	_ui_layer.add_child(_menu)
@@ -70,6 +80,8 @@ func _build_ui() -> void:
 	_ui_layer.add_child(_lobby)
 	_settings = _build_settings()
 	_ui_layer.add_child(_settings)
+	_pause = _build_pause()
+	_ui_layer.add_child(_pause)
 	_scrapbook = _build_scrapbook()
 	_ui_layer.add_child(_scrapbook)
 	Scrapbook.changed.connect(func() -> void:
@@ -221,6 +233,68 @@ func _build_settings() -> Control:
 	box.add_child(_button("BACK", func() -> void: _settings.visible = false))
 	return panel
 
+# ── Pause ──────────────────────────────────────────────────────────────────
+
+## Esc in-game. NOTE: this does NOT pause the tree. It's a co-op game — the
+## Housesitter keeps hunting and your friends keep playing while you read this,
+## so the panel says so out loud rather than implying a safety that isn't there.
+func _build_pause() -> Control:
+	var root := Control.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.visible = false
+
+	# A dim, not a blackout: you can still see the room you're standing in.
+	var dim := ColorRect.new()
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.color = Color(0.02, 0.01, 0.03, 0.72)
+	root.add_child(dim)
+
+	var panel := PanelContainer.new()
+	panel.set_anchors_preset(Control.PRESET_CENTER)
+	panel.position = Vector2(-150, -140)
+	panel.custom_minimum_size = Vector2(300, 280)
+	root.add_child(panel)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	panel.add_child(box)
+
+	var t := Label.new()
+	t.text = "PAUSED"
+	t.add_theme_font_size_override("font_size", 30)
+	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(t)
+
+	var warn := _label("(the house doesn't stop)")
+	warn.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	warn.add_theme_color_override("font_color", Color(0.85, 0.6, 0.6))
+	box.add_child(warn)
+
+	box.add_child(_button("RESUME", func() -> void: _set_paused(false)))
+	box.add_child(_button("SETTINGS", func() -> void: _settings.visible = true))
+	box.add_child(_button("LEAVE GAME", func() -> void: _leave_to_menu()))
+	return root
+
+func _input(event: InputEvent) -> void:
+	if _state != State.GAME:
+		return
+	if event is InputEventKey and event.pressed and not event.echo \
+			and event.keycode == KEY_ESCAPE:
+		# Handled HERE, not in Main: consume it so the game below never sees it.
+		# Settings sits on top of pause, so Esc backs out of that first.
+		if _settings.visible:
+			_settings.visible = false
+		else:
+			_set_paused(not _pause.visible)
+		get_viewport().set_input_as_handled()
+
+func _set_paused(on: bool) -> void:
+	_pause.visible = on
+	if not on:
+		_settings.visible = false
+	# Releasing the mouse IS the pause, as far as the player is concerned.
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if on else Input.MOUSE_MODE_CAPTURED
+
 # ── The Scrapbook (lore + cosmetic unlocks) ────────────────────────────────
 
 func _build_scrapbook() -> Control:
@@ -334,9 +408,10 @@ func _refresh_skins() -> void:
 
 func _show(s: State) -> void:
 	_state = s
-	# The whole UI layer (incl. its opaque background) hides in-game so the 3D
-	# world is visible; the game draws its own HUD on its own CanvasLayer.
-	_ui_layer.visible = s != State.GAME
+	# Only the opaque BACKGROUND is state-dependent — the layer itself stays up so
+	# the pause menu can overlay the live 3D world. The game draws its HUD on its
+	# own CanvasLayer, below this one.
+	_menu_bg.visible = s != State.GAME
 	_menu.visible = s == State.MENU
 	_lobby.visible = s == State.LOBBY
 	# Settings is available from the menu AND the lobby (mic setup happens there).
@@ -344,6 +419,8 @@ func _show(s: State) -> void:
 		_settings.visible = false
 	if s == State.GAME and _scrapbook:
 		_scrapbook.visible = false
+	if s != State.GAME and _pause:
+		_pause.visible = false
 
 func _on_lobby_ready(_lobby_id: int, is_host: bool) -> void:
 	LobbyManager.enter_lobby(SteamManager.persona())
@@ -407,10 +484,28 @@ func _load_game(is_host: bool) -> void:
 	if _game.has_method("begin"):
 		_game.begin(is_host, _is_test, LobbyManager.players.get(_my_id_safe(), {}).get("spectator", false))
 
+## The single way out of a round — used by the pause menu, by the recap, and by a
+## host quitting out from under us. Tears the game scene down before dropping the
+## peer so nothing is left running against a dead connection.
 func _leave_to_menu() -> void:
+	if _game != null:
+		_game.queue_free()
+		_game = null
+	if _pause:
+		_pause.visible = false
+	_settings.visible = false
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	SteamManager.leave_lobby()
 	LobbyManager.leave()
 	_show(State.MENU)
+
+## Host quit / crashed / lost connection. v1 has no host migration (launch plan),
+## so the round is simply over — but it must END, not strand everyone in a world
+## that has stopped updating.
+func _on_server_disconnected() -> void:
+	print("[NETTEST] server disconnected — returning to menu")
+	_leave_to_menu()
+	_menu_status.text = "the host left — everyone went home."
 
 func _my_id_safe() -> int:
 	return multiplayer.get_unique_id() if multiplayer.has_multiplayer_peer() else 1

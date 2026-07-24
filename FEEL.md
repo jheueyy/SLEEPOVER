@@ -503,6 +503,30 @@ Three rules that all exist because a live playtest broke them:
   ghost state hasn't arrived yet is not a caught teammate. Ending a round on absent data
   is the worst possible false positive.
 
+## Pause + getting out (`core/ui/AppRoot.gd`)
+**Esc → RESUME · SETTINGS · LEAVE GAME**, drawn over the live 3D world.
+
+**It does not pause the tree, and the panel says so** (*"the house doesn't stop"*). This
+is co-op: the Housesitter keeps hunting and your friends keep playing. A pause menu that
+implies safety it can't deliver is worse than none.
+
+Two structural notes, both of which were why no pause menu existed before:
+
+- The UI `CanvasLayer` carried an **opaque background**, so the only way to see the game
+  was to hide the whole layer — which hid every panel with it. Now only `_menu_bg` is
+  state-dependent and the layer stays up.
+- That layer sits at `layer = 10`, above the game's HUD layer, which is added later and
+  would otherwise draw on top of the pause panel.
+
+Esc is owned by `AppRoot._input` and **consumed** (`set_input_as_handled()`), so `Main`
+never sees it. Don't add a second Esc handler — two owners means one silently loses.
+
+`_leave_to_menu()` is the single exit: it frees the game scene *before* dropping the
+peer, so nothing is left running against a dead connection. It's reached from the pause
+menu, and from `multiplayer.server_disconnected` when the **host quits** — v1 has no host
+migration, so the round is over, but it has to actually END rather than strand everyone
+in a world that stopped updating.
+
 ## The speed ladder (keep this ordering true while tuning!)
 ```
 shuffle_speed (2.0)  <  monster.move_speed (2.6)  <  hop-chain pace (~3.6 bursts)

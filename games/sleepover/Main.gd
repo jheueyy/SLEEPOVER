@@ -517,6 +517,7 @@ func _run_selftest() -> void:
 	# session, each of which passed every existing test while being broken in play.
 	pass_all = _selftest_playtest_fixes() and pass_all
 	pass_all = await _selftest_monster_containment() and pass_all
+	pass_all = _selftest_pause() and pass_all
 
 	# Hand the player's real save back, untouched by any of the above.
 	Scrapbook.use_test_path("")
@@ -618,6 +619,38 @@ func _selftest_playtest_fixes() -> bool:
 		+ "spectate-cocooned-mate=%s(%s) roster-aware-loss=%s -> %s"
 		% [coc_spec, coc_spec_on, roster_ok, ok])
 	return ok
+
+## The pause menu lives in AppRoot but is only reachable in GAME, so it is asserted
+## from here, where a real game scene exists. The structural bug it depends on is
+## easy to reintroduce: hiding the whole UI CanvasLayer in GAME (rather than just
+## its opaque background) makes any in-game panel impossible to show.
+func _selftest_pause() -> bool:
+	var app := get_parent()
+	if app == null or not app.has_method("_set_paused"):
+		print("[SELFTEST] pause: SKIPPED (no AppRoot parent)")
+		return true
+	var layer: CanvasLayer = app.get("_ui_layer")
+	var bg: ColorRect = app.get("_menu_bg")
+	var panel: Control = app.get("_pause")
+	# In GAME: layer up (so panels CAN draw), background down (so you see the house).
+	var overlays := layer != null and layer.visible and bg != null and not bg.visible
+	var starts_hidden := panel != null and not panel.visible
+	app.call("_set_paused", true)
+	var opens: bool = panel != null and panel.visible
+	app.call("_set_paused", false)
+	var closes: bool = panel != null and not panel.visible
+	# Pause must draw ABOVE the game's HUD layer, or it's invisible in practice.
+	var above_hud: bool = layer != null and layer.layer > _hud_layer_index()
+	var ok := overlays and starts_hidden and opens and closes and above_hud
+	print("[SELFTEST] pause: overlays-live-game=%s starts-hidden=%s opens=%s closes=%s above-hud=%s -> %s"
+		% [overlays, starts_hidden, opens, closes, above_hud, ok])
+	return ok
+
+func _hud_layer_index() -> int:
+	for c in get_children():
+		if c is CanvasLayer:
+			return (c as CanvasLayer).layer
+	return 0
 
 ## "The monster glitched through the wall and ended up on the roof" — which is
 ## also the likeliest cause of the reported chase-less round. It has no collider
@@ -1468,7 +1501,10 @@ func _show_results(data: Dictionary) -> void:
 			text += "   %s — %s\n      %s\n" % [
 				a["title"], names.get(a["pid"], "Player %d" % a["pid"]), a["blurb"]]
 	_bank_career_stats(stats)
+	# Everyone needs a way out of the recap, not just the host — ENTER only ever
+	# did anything on the host's machine, so a client's round simply never ended.
 	text += "\nhost presses ENTER to run it back"
+	text += "\nESC → LEAVE GAME to go back to the menu"
 	_results_label.text = text
 	_results_overlay.visible = true
 	_cocoon_overlay.visible = false
@@ -1968,10 +2004,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			deg_to_rad(-55.0), deg_to_rad(25.0))
 	elif event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
-			KEY_ESCAPE:
-				Input.mouse_mode = (Input.MOUSE_MODE_VISIBLE
-					if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
-					else Input.MOUSE_MODE_CAPTURED)
+			# KEY_ESCAPE is owned by AppRoot._input (the pause menu) and consumed
+			# there, so it never reaches this handler. Don't add it back here —
+			# two owners of Esc means one of them silently loses.
 			KEY_F3:
 				_debug_visible = not _debug_visible
 				_debug_label.visible = _debug_visible
