@@ -272,7 +272,7 @@ static func perch_tops() -> Array[Vector3]:
 		out.append(Vector3(p.x, p.y + PERCH_H, p.z))
 	return out
 
-# Loose household items (sock balls, party poppers) scatter across these at
+# Loose household items (cans of dog food, party poppers) scatter across these at
 # round start. Kid-mess placement: the FLOORS of rooms, not shelves — you trip
 # over these, you don't hunt for them. Spread over all four levels so item
 # greed pulls players the same directions the clues do.

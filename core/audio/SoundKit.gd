@@ -134,7 +134,8 @@ static func _click() -> PackedFloat32Array:
 	return out
 
 static func _thump() -> PackedFloat32Array:
-	# Balled-up socks hitting carpet: a soft dead thud, all body and no snap.
+	# A full can of dog food hitting carpet: a heavy dead thud, all body and no
+	# snap. (`clatter` is the loose metallic fuse rattle — wrong for a sealed tin.)
 	var n := int(RATE * 0.25)
 	var out := PackedFloat32Array()
 	out.resize(n)

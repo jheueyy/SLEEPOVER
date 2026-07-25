@@ -53,7 +53,11 @@ func setup(d: ObjectiveDef, s: Dictionary, blurred: bool) -> void:
 			_clue = _prop(def.clue_spots[seed.get("clue", 0)], Color(0.9, 0.9, 0.5), "DIAGRAM")
 			_action = _prop(def.action_spot + Vector3.UP * 0.6, Color(0.6, 0.4, 0.2), "FUSE BOX")
 		ObjectiveDef.Kind.DOG:
-			_clue = _prop(def.clue_spots[0], Color(0.9, 0.8, 0.3), "SNACK")
+			# BEEF JERKY, not "snack" — a thrown CAN OF DOG FOOD is a separate
+			# inventory item (a pure noise decoy), and two dog-food pickups that
+			# behave differently is a confusion players walk straight into.
+			# Don't rename this back without renaming that.
+			_clue = _prop(def.clue_spots[0], Color(0.9, 0.8, 0.3), "BEEF JERKY")
 			_dog = _prop(HouseSuburban.DOG_PATH[0] * HouseSuburban.S, Color(0.5, 0.35, 0.2), "DOG (keys!)")
 			_dog.position.y = HouseSuburban.DOG_PATH[0].y
 		ObjectiveDef.Kind.DEADBOLT:
@@ -155,9 +159,9 @@ func prompt(player_pos: Vector3) -> String:
 				return def.action_prompt
 		ObjectiveDef.Kind.DOG:
 			if not _has_snack and _near(_clue.position, player_pos):
-				return "E: GRAB SNACK"
+				return "E: GRAB JERKY"
 			if _has_snack and _dog != null and _near(_dog.position, player_pos):
-				return "E: GIVE SNACK (get keys)"
+				return "E: GIVE JERKY (get keys)"
 		ObjectiveDef.Kind.DEADBOLT:
 			if _near(def.action_spot, player_pos):
 				return "HOLD E — needs a second player"
@@ -180,6 +184,17 @@ func grab_available(player_pos: Vector3) -> bool:
 		ObjectiveDef.Kind.GLASSES:
 			return blurred_is_me and _clue != null and _near(_clue.position, player_pos)
 	return false
+
+## A thrown CAN OF DOG FOOD landed at `at` — was the dog close enough to notice?
+## True lets Main say the dog sniffed it and lost interest. That line exists so the
+## obvious experiment ("feed the dog the dog food") produces a REACTION rather than
+## silence, which reads as a bug. It is deliberately inert: the can is a noise decoy
+## and can never stand in for the jerky, so this must never touch `_has_snack`,
+## `_finish()` or `keys_granted`.
+func dog_sniffs_can(at: Vector3) -> bool:
+	if done or def.kind != ObjectiveDef.Kind.DOG or _dog == null:
+		return false
+	return _dog.position.distance_to(at) < 2.5
 
 ## Distance to the nearest thing here an E PRESS could act on, or INF when this
 ## objective has nothing pressable in reach. Main uses it to arbitrate the single
@@ -227,7 +242,7 @@ func try_interact(player_pos: Vector3) -> bool:
 			if not _has_snack and _near(_clue.position, player_pos):
 				_has_snack = true
 				_clue.visible = false
-				toast.emit("Grabbed the snack. Now find the dog.")
+				toast.emit("Grabbed the jerky. Now find the dog.")
 				return true
 			if _has_snack and _dog != null and _near(_dog.position, player_pos):
 				action_noise.emit(_dog.global_position, def.noise_loudness)

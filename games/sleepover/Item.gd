@@ -7,17 +7,17 @@ extends Node3D
 ## always slow and loud). Taking is host-authoritative: first claim wins, the
 ## prop vanishes for everyone, and only the claimant's inventory gains it.
 
-enum Kind { SOCK, POPPER, KEYS }
+enum Kind { CAN, POPPER, KEYS }
 
 const NEAR := 2.0   ## interaction reach (m), matches Objective/Fragment
 
 ## Display + gray-box prop data per kind. Tone law: creepy-cute household
 ## clutter, nothing that reads as a weapon.
 const DEFS := {
-	Kind.SOCK: {
-		"name": "SOCK BALL",
-		"color": Color(0.88, 0.86, 0.78),
-		"blurb": "balled-up socks. throw to make noise SOMEWHERE ELSE.",
+	Kind.CAN: {
+		"name": "CAN OF DOG FOOD",
+		"color": Color(0.75, 0.45, 0.28),
+		"blurb": "heavy, and it lands LOUD. throw it to make noise somewhere else.",
 	},
 	Kind.POPPER: {
 		"name": "PARTY POPPER",
@@ -32,7 +32,7 @@ const DEFS := {
 }
 
 var uid: int = -1
-var kind: int = Kind.SOCK
+var kind: int = Kind.CAN
 var taken: bool = false
 
 func setup(p_uid: int, p_kind: int, at: Vector3) -> void:
@@ -41,11 +41,13 @@ func setup(p_uid: int, p_kind: int, at: Vector3) -> void:
 	position = at
 	var col: Color = DEFS[kind]["color"]
 	var mesh := MeshInstance3D.new()
-	if kind == Kind.SOCK:
-		var ball := SphereMesh.new()
-		ball.radius = 0.14
-		ball.height = 0.24   # slightly squashed — socks, not a baseball
-		mesh.mesh = ball
+	if kind == Kind.CAN:
+		# A straight tin — distinct in silhouette from the popper's cone.
+		var tin := CylinderMesh.new()
+		tin.top_radius = 0.09
+		tin.bottom_radius = 0.09
+		tin.height = 0.22
+		mesh.mesh = tin
 	elif kind == Kind.POPPER:
 		var cone := CylinderMesh.new()
 		cone.top_radius = 0.02

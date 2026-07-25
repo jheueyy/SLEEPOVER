@@ -504,19 +504,29 @@ Three rules that all exist because a live playtest broke them:
   is the worst possible false positive.
 
 ## Items + the 2-slot inventory (`games/sleepover/Item.gd`, `Main.gd`)
-Two slots. That's the whole design: the keys take one, so every sock you hoard is a
+Two slots. That's the whole design: the keys take one, so every can you hoard is a
 **choice**. Item pickups ride the same nearest-wins E arbitration and the same slow, loud
 unzip channel as clue grabs — reaching out of the bag is always a commitment. World items
-are host-authoritative like fragments (first claim wins; a sock that lived in two
+are host-authoritative like fragments (first claim wins; a can that lived in two
 inventories would be a desync you can *hear*). Getting cocooned **spills both slots** onto
 the floor beside your bag — keys on the ground next to a caught friend is the
 recover-the-keys beat, not a fail state. Use a slot with **1** / **2** (a live keypad
-panel owns the digits first, so you can't hurl a sock mid-code).
+panel owns the digits first, so you can't hurl a can mid-code).
 
-- **Sock ball** — the only verb that turns the monster's *hearing* into a tool. Thrown, it
-  arcs to a landing point (decided at throw time, deterministic for everyone; the flight is
-  garnish), pings `NoiseBus` **there**, and stays on the floor to be re-grabbed. Noise
-  somewhere else, on purpose.
+- **Can of dog food** — the only verb that turns the monster's *hearing* into a tool.
+  Thrown, it arcs to a landing point (decided at throw time, deterministic for everyone;
+  the flight is garnish), pings `NoiseBus` **there**, and stays on the floor to be
+  re-grabbed. Noise somewhere else, on purpose. It is a **pure decoy**: it does not lure
+  the dog and can never substitute for the jerky.
+
+  > **Why the Dog objective's clue is BEEF JERKY, not "snack".** A thrown can is dog food,
+  > so two dog-food pickups that behave differently is a confusion players walk straight
+  > into — and the first thing anyone tries is feeding the can to the dog. The clue is
+  > therefore an unmistakably different object, and a can landing within 2.5 m of the dog
+  > gets a line (`Objective.dog_sniffs_can()`) saying it sniffed and wants the good stuff.
+  > That method is deliberately inert — it must never touch `_has_snack`, `_finish()` or
+  > `keys_granted`, or the keys objective gains a second solution nobody designed. The
+  > `items` selftest pins both halves: the dog reacts, and nothing about it completes.
 - **Party popper** — one-time. `Monster.flinch()`: she recoils in place ~2s, any lunge in
   flight cancelled — and the recoil ends in an INVESTIGATE of the bang, i.e. exactly where
   you were standing. An **exchange, not an escape button**: it buys distance at the price

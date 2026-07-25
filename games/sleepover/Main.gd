@@ -133,7 +133,7 @@ var _frag_panel_t: float = 0.0
 var _tape_ui: AudioStreamPlayer
 
 # Inventory + world items (this round). Two slots, that's the whole game: the
-# keys take one, so every sock you hoard is a choice. World items are host-
+# keys take one, so every can you hoard is a choice. World items are host-
 # authoritative like fragments — first claim wins.
 var _items: Array[Item] = []
 var _inv: Array[int] = [-1, -1]          ## Item.Kind per slot, -1 = empty
@@ -142,11 +142,11 @@ var _inv_label: Label
 var _keys_door_open: bool = false        ## HOUSE KEYS turned in the back door lock
 
 @export_group("Items")
-@export var sock_throw_range: float = 8.0     ## max throw distance (m)
-@export var sock_loudness: float = 0.9        ## the thump where it lands — a real decoy
+@export var can_throw_range: float = 8.0      ## max throw distance (m)
+@export var can_loudness: float = 0.9         ## the thud where it lands — a real decoy
 @export var popper_loudness: float = 1.0      ## the bang — loudest thing you can do
 @export var popper_flinch_secs: float = 2.0   ## how long she recoils
-@export var item_sock_count: int = 3          ## socks scattered per round
+@export var item_can_count: int = 3           ## cans scattered per round
 @export var item_popper_count: int = 1        ## poppers per round (scarce on purpose)
 
 # Glasses blur (post-process on the one blurred player)
@@ -540,7 +540,7 @@ func _run_selftest() -> void:
 	pass_all = _selftest_pause() and pass_all
 
 	# 23. ITEMS + 2-SLOT INVENTORY. Spawn -> nearest-wins pickup -> throw (noise
-	# somewhere else, sock re-grabbable) -> popper (flinch, then she investigates
+	# somewhere else, can re-grabbable) -> popper (flinch, then she investigates
 	# the bang) -> cocoon spills your slots onto the floor.
 	pass_all = await _selftest_items() and pass_all
 
@@ -725,29 +725,29 @@ func _selftest_items() -> bool:
 	_apply_phase(Phase.LOBBY, {})
 	_host_start_round()
 	_apply_phase(Phase.ROUND, {})
-	var spawned := _items.size() == item_sock_count + item_popper_count
+	var spawned := _items.size() == item_can_count + item_popper_count
 
-	# Pickup: stand on a sock, the focus arbitration must hand E to it, and
+	# Pickup: stand on a can, the focus arbitration must hand E to it, and
 	# committing the claim must fill slot 1 and void the world prop.
-	var sock: Item = null
+	var can: Item = null
 	for it: Item in _items:
-		if it.kind == Item.Kind.SOCK:
-			sock = it
+		if it.kind == Item.Kind.CAN:
+			can = it
 			break
 	_player.rescue()
-	_player.global_position = sock.position + Vector3.UP * 0.1
+	_player.global_position = can.position + Vector3.UP * 0.1
 	var focus_item: bool = str(_interact_focus()["kind"]) == "item"
-	_finish_item_pickup(sock)
-	var picked: bool = _inv[0] == Item.Kind.SOCK and sock.taken
+	_finish_item_pickup(can)
+	var picked: bool = _inv[0] == Item.Kind.CAN and can.taken
 
-	# Hands full: with both slots occupied the sock underfoot leaves the E race.
+	# Hands full: with both slots occupied the can underfoot leaves the E race.
 	_inv[1] = Item.Kind.POPPER
-	var spare := _spawn_item(99001, Item.Kind.SOCK, _player.global_position)
+	var spare := _spawn_item(99001, Item.Kind.CAN, _player.global_position)
 	var full_skips: bool = str(_interact_focus()["kind"]) != "item"
 	_inv[1] = -1
 	spare.mark_taken()
 
-	# Throw: slot empties, the landing minted a NEW re-grabbable world sock, and
+	# Throw: slot empties, the landing minted a NEW re-grabbable world can, and
 	# the throw pinged the noise bus (the whole point of throwing it).
 	var pings := [0]
 	var count_ping := func(_p: Vector3, _l: float) -> void: pings[0] += 1
@@ -779,19 +779,44 @@ func _selftest_items() -> bool:
 		and _monster._last_known.distance_to(ppos) < 1.5
 
 	# Cocoon: both slots spill out beside the bag as world items.
-	_inv = [Item.Kind.SOCK, Item.Kind.KEYS]
+	_inv = [Item.Kind.CAN, Item.Kind.KEYS]
 	var world_before := _live_item_count()
 	_cocoon_local()
 	var dropped: bool = _inv[0] == -1 and _inv[1] == -1 \
 		and _live_item_count() == world_before + 2
 	_player.rescue()
 
+	# The can is a NOISE DECOY, never a shortcut: throwing one at the dog must
+	# get a reaction and change nothing. If this ever flips, the keys objective
+	# has a second solution nobody designed.
+	var dog_reacts := false
+	var dog_untouched := true
+	_apply_phase(Phase.LOBBY, {})
+	_apply_phase(Phase.LIGHTS_OUT, {"objs": [{"id": "dog"}], "items": []})
+	_apply_phase(Phase.ROUND, {})
+	var dog_o: Objective = _objectives[0]
+	var dogpos: Vector3 = dog_o._dog.position
+	# Bidirectional, or this only proves "distance to itself is zero": a can at
+	# its feet gets sniffed, a can thrown across the house does not.
+	dog_reacts = dog_o.dog_sniffs_can(dogpos + Vector3(0.8, 0.0, 0.0)) \
+		and not dog_o.dog_sniffs_can(dogpos + Vector3(9.0, 0.0, 0.0))
+	# Stand next to the dog and hurl a can right at it.
+	_player.rescue()
+	_player.global_position = dogpos + Vector3(0.5, 0.4, 0.0)
+	_player.facing = Vector3(0, 0, -1)
+	_inv[0] = Item.Kind.CAN
+	_use_slot(0)
+	dog_untouched = not _done_ids.has("dog") and not _inv_has(Item.Kind.KEYS) \
+		and not dog_o.done
+
 	var ok := spawned and focus_item and picked and full_skips and thrown \
-		and flinched and investigates and dropped
+		and flinched and investigates and dropped and dog_reacts and dog_untouched
 	print("[SELFTEST] items: spawned=%s pickup(focus=%s slot=%s) hands-full-skips=%s "
 		% [spawned, focus_item, picked, full_skips]
-		+ "throw=%s popper(flinch=%s investigates=%s) cocoon-drop=%s -> %s"
-		% [thrown, flinched, investigates, dropped, ok])
+		+ "throw=%s popper(flinch=%s investigates=%s) cocoon-drop=%s "
+		% [thrown, flinched, investigates, dropped]
+		+ "can-vs-dog(sniffs=%s no-shortcut=%s) -> %s"
+		% [dog_reacts, dog_untouched, ok])
 	return ok
 
 func _live_item_count() -> int:
@@ -1374,7 +1399,7 @@ void fragment() {
 		pip_row.add_child(pip)
 		_pips.append(pip)
 
-	# The 2-slot inventory, bottom-left. Text-only gray-box: "[1] SOCK BALL".
+	# The 2-slot inventory, bottom-left. Text-only gray-box: "[1] CAN OF DOG FOOD".
 	_inv_label = Label.new()
 	_inv_label.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	_inv_label.position = Vector2(16, -40)
@@ -1639,16 +1664,16 @@ func _pick_fragments(used: Array[Vector3]) -> Array:
 		si += 1
 	return out
 
-## Host: scatter this round's loose items over the ITEM_SPOTS pool — a few sock
-## balls and (scarce, on purpose) a party popper. Uids come from the host counter
+## Host: scatter this round's loose items over the ITEM_SPOTS pool — a few cans of
+## dog food and (scarce, on purpose) a party popper. Uids come from the host counter
 ## so throws can mint fresh ones without colliding.
 func _pick_items() -> Array:
 	var spots: Array = HouseSuburban.ITEM_SPOTS.duplicate()
 	spots.shuffle()
 	var out: Array = []
 	var kinds: Array[int] = []
-	for _i in item_sock_count:
-		kinds.append(Item.Kind.SOCK)
+	for _i in item_can_count:
+		kinds.append(Item.Kind.CAN)
 	for _i in item_popper_count:
 		kinds.append(Item.Kind.POPPER)
 	for i in mini(kinds.size(), spots.size()):
@@ -2016,7 +2041,7 @@ func _inv_has(kind: int) -> bool:
 	return _inv.has(kind)
 
 ## Local player finished the unzip on a world item: ask the host to commit the
-## claim. NOT optimistic — two players can race for the same sock, and a sock
+## claim. NOT optimistic — two players can race for the same can, and a can
 ## that exists in two inventories is a desync you can hear.
 func _finish_item_pickup(it: Item) -> void:
 	if it == null or it.taken or _inv_free_slot() == -1:
@@ -2097,9 +2122,9 @@ func _use_slot(slot: int) -> void:
 		return
 	var kind := _inv[slot]
 	match kind:
-		Item.Kind.SOCK:
+		Item.Kind.CAN:
 			_inv[slot] = -1
-			_throw_sock()
+			_throw_can()
 		Item.Kind.POPPER:
 			_inv[slot] = -1
 			_use_popper()
@@ -2120,35 +2145,43 @@ func _use_slot(slot: int) -> void:
 			return
 	_refresh_inv_hud()
 
-## The sock throw: noise SOMEWHERE ELSE, the only verb that turns the monster's
+## The can throw: noise SOMEWHERE ELSE, the only verb that turns the monster's
 ## hearing into a tool. Landing point is decided at throw time (deterministic
 ## for everyone), the flight is just a visual.
-func _throw_sock() -> void:
+func _throw_can() -> void:
 	var from := _player.global_position + Vector3.UP * 0.7
-	var land := _sock_landing(from, _player.facing)
+	var land := _throw_landing(from, _player.facing)
 	_animate_throw(from, land)
 	# Only the thrower emits — NoiseBus already relays client pings to the host,
 	# so if every peer emitted, the monster would hear one throw N times.
-	NoiseBus.emit_noise(land, sock_loudness)
+	NoiseBus.emit_noise(land, can_loudness)
 	SoundKit.play_at(self, land, "thump")
-	_request_spawn_item(Item.Kind.SOCK, land)   # re-grabbable where it lands
+	_request_spawn_item(Item.Kind.CAN, land)   # re-grabbable where it lands
+	# Feeding the dog the dog food is the first thing anyone tries. It doesn't
+	# work (the jerky is the hand-off) — but it has to SAY so, or trying the
+	# obvious thing looks broken.
+	for o: Objective in _objectives:
+		if o.dog_sniffs_can(land):
+			_show_toast("The dog sniffs the can and loses interest. It wants the good stuff.", 3.5)
+			break
 	if _net_connected():
-		_net_sock_thrown.rpc(from, land)
-	print("[NETTEST] sock thrown to %v" % land)
+		_net_throw_fx.rpc(from, land)
+	print("[NETTEST] can thrown to %v" % land)
 
 @rpc("any_peer", "call_remote", "reliable")
-func _net_sock_thrown(from: Vector3, land: Vector3) -> void:
+func _net_throw_fx(from: Vector3, land: Vector3) -> void:
 	_animate_throw(from, land)   # visual only; the thrower already emitted noise
 
-## Where a sock thrown from `from` toward `dir` ends up: march the throw range in
+## Where a can thrown from `from` toward `dir` ends up: march the throw range in
 ## steps, raycasting down; stop early if a wall blocks the segment. Gray-box
 ## ballistics — flat range + floor snap reads fine at bag scale.
-func _sock_landing(from: Vector3, dir: Vector3) -> Vector3:
+## (Not `_can_landing`: `_can_*` is this file's boolean-predicate convention.)
+func _throw_landing(from: Vector3, dir: Vector3) -> Vector3:
 	var flat := Vector3(dir.x, 0.0, dir.z).normalized()
 	if flat == Vector3.ZERO:
 		flat = Vector3.FORWARD
 	var space := get_world_3d().direct_space_state
-	var target := from + flat * sock_throw_range
+	var target := from + flat * can_throw_range
 	# Wall between us and the far point shortens the throw to just before it.
 	var wall := space.intersect_ray(PhysicsRayQueryParameters3D.create(from, target, 1))
 	if wall:
@@ -2162,12 +2195,13 @@ func _sock_landing(from: Vector3, dir: Vector3) -> Vector3:
 ## A small tween arc — pure garnish, the landing is already decided.
 func _animate_throw(from: Vector3, land: Vector3) -> void:
 	var ball := MeshInstance3D.new()
-	var m := SphereMesh.new()
-	m.radius = 0.12
-	m.height = 0.2
+	var m := CylinderMesh.new()
+	m.top_radius = 0.09
+	m.bottom_radius = 0.09
+	m.height = 0.22
 	ball.mesh = m
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Item.DEFS[Item.Kind.SOCK]["color"]
+	mat.albedo_color = Item.DEFS[Item.Kind.CAN]["color"]
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	ball.set_surface_override_material(0, mat)
 	add_child(ball)
@@ -2654,7 +2688,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				var digit := _keycode_to_digit(event.keycode)
 				if digit != -1:
 					# An open dial/keypad panel owns the digits outright — you
-					# can't accidentally hurl a sock while entering the code.
+					# can't accidentally hurl a can while entering the code.
 					var entry := _active_entry()
 					if entry != null:
 						entry.on_key(digit)
@@ -2697,8 +2731,8 @@ func _interact_focus() -> Dictionary:
 			if d < float(out["dist"]):
 				out = {"kind": "fragment", "obj": null, "frag": fr, "dist": d}
 	# World items join the same nearest-wins arbitration. A full inventory takes
-	# them out of the running entirely, so a sock at your feet can't shadow the
-	# keypad behind it when you couldn't pick the sock up anyway.
+	# them out of the running entirely, so a can at your feet can't shadow the
+	# keypad behind it when you couldn't pick the can up anyway.
 	if _inv_free_slot() != -1:
 		for it: Item in _items:
 			if it.near(p):
@@ -2747,7 +2781,7 @@ func _begin_unzip(o: Objective, fr: Fragment) -> void:
 	SoundKit.play_at(self, _player.global_position, "zipper")
 
 ## Items ride the same channel: reaching out of the bag is always slow and loud,
-## whether it's for a clue, a lore tape, or somebody's sock.
+## whether it's for a clue, a lore tape, or a can of dog food.
 func _begin_unzip_item(it: Item) -> void:
 	_begin_unzip(null, null)
 	_unzip_item = it
