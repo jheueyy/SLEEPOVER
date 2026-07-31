@@ -17,6 +17,11 @@ extends Object
 ## tuning. House geometry is deliberately NOT scaled — see FEEL.md.
 const BAG_HEIGHT := 0.45
 
+## Where the googly eyes sit, as a fraction of height above the bag's FEET.
+## The first-person camera reads this so "first person" is genuinely behind the
+## eyes. Keep it and the eye meshes below in sync — they are the same number.
+const EYE_FRACTION := 0.74
+
 const SKINS: Array = [
 	{"name": "CLASSIC RED", "base": Color(0.82, 0.12, 0.12)},
 	{"name": "NIGHT SKY", "base": Color(0.16, 0.28, 0.78)},
@@ -103,7 +108,7 @@ static func build_with_eyes(height: float = BAG_HEIGHT, skin: int = 0) -> Array:
 		eye_mesh.radius = 0.095 * height
 		eye_mesh.height = 0.19 * height
 		eye.mesh = eye_mesh
-		eye.position = Vector3(side * 0.085 * height, 0.74 * height, -0.175 * height)
+		eye.position = Vector3(side * 0.085 * height, EYE_FRACTION * height, -0.175 * height)
 		eye.set_surface_override_material(0, white_mat)
 		root.add_child(eye)
 

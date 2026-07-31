@@ -58,7 +58,7 @@ you'd rather. You can also flip it mid-round with **M**.
 | **E** (hold, next to a cocooned friend) | Unzip them free |
 | **E** (hold, at an item / lore) | Pick it up into your 2 inventory slots |
 | **1 / 2** | Use the item in that slot (throw a can, pop a popper, turn the keys) |
-| **C** | Toggle first-person / third-person camera |
+| **C** | Toggle camera — starts in **first person**; C drops to third to watch your own bag |
 | **0–9** | Dial a phone / type on a keypad, once its panel is open |
 | **V** (hold) | Push-to-talk |
 | **M** | Switch push-to-talk ↔ open mic |

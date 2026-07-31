@@ -53,7 +53,12 @@ var _yaw: float = 0.0
 var _pitch: float = 0.0
 var _lookback: float = 0.0
 var _cocoon_cam: float = 0.0   ## 0 = normal chase cam, 1 = snapped inside the bag
-var _first_person: bool = false  ## C toggles; tumble/cocoon force third person
+## Default ON at gnome scale: from 0.45m up, a first-person view is what actually
+## sells a 3m ceiling and a Housesitter five times your height. C toggles out to
+## third whenever you want to watch your own bag be a bag; tumble and cocoon force
+## third regardless.
+var _first_person: bool = true
+var _fp_default: bool = true     ## what C returns you to (and what selftests restore)
 var _fp_blend: float = 0.0       ## 0 = chase cam, 1 = eyes inside the bag
 var _porch_light: OmniLight3D  ## flickers during the 10s intro, then dies
 var _porch_dying: bool = false
@@ -852,10 +857,18 @@ func _live_item_count() -> int:
 ## spring collapsed to the eyes; tumble -> forced back out, bag visible again.
 func _selftest_first_person() -> bool:
 	_player.rescue()
+	_player.global_position = HouseSuburban.scaled(Vector3(-5.0, 0.4, 3.5))
 	_first_person = true
 	for _i in 60:
 		_update_camera(1.0 / 30.0)
 	var fp_on := _fp_blend > 0.9 and not _player.visible and _spring.spring_length < 0.3
+	# BEHIND THE EYES, not above the head. The camera pivot rides the body CENTRE
+	# while BagVisual measures eyes from the FEET, so a missing half-height offset
+	# silently floats the view a third of a bag above where you're looking from —
+	# which is exactly why this never read as first person before.
+	var want_eye_y: float = _player.global_position.y \
+		+ BagVisual.BAG_HEIGHT * (BagVisual.EYE_FRACTION - 0.5)
+	var at_eye_level: bool = absf(_cam_pivot.global_position.y - want_eye_y) < 0.05
 	_player.state = SleepingBagPlayer.State.TUMBLED
 	for _i in 60:
 		_update_camera(1.0 / 30.0)
@@ -866,9 +879,10 @@ func _selftest_first_person() -> bool:
 	for _i in 60:
 		_update_camera(1.0 / 30.0)
 	var back_out := _player.visible and _fp_blend < 0.05
-	var ok := fp_on and tumble_forces_third and back_out
-	print("[SELFTEST] first-person: on(hidden+close)=%s tumble-forces-third=%s toggle-off=%s -> %s"
-		% [fp_on, tumble_forces_third, back_out, ok])
+	_first_person = _fp_default   # leave the game in its shipping default
+	var ok := fp_on and at_eye_level and tumble_forces_third and back_out
+	print("[SELFTEST] first-person: on(hidden+close)=%s at-eye-level=%s tumble-forces-third=%s toggle-off=%s -> %s"
+		% [fp_on, at_eye_level, tumble_forces_third, back_out, ok])
 	return ok
 
 ## The keys chain: dog -> inventory -> the back door needs them TURNED.
@@ -1331,7 +1345,7 @@ func _build_hud() -> void:
 	add_child(layer)
 
 	var help := Label.new()
-	help.text = "WASD shuffle   Space hop   E interact   1/2 use items   C camera   Q look back   V talk   M mic   Esc pause"
+	help.text = "WASD shuffle   Space hop   E interact   1/2 use items   C 1st/3rd person   Q look back   V talk   M mic   Esc pause"
 	help.position = Vector2(16, 12)
 	layer.add_child(help)
 
@@ -2718,8 +2732,14 @@ func _show_toast(text: String, secs: float = 4.0) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		_yaw -= event.relative.x * mouse_sensitivity
+		# Looking UP is the whole point at this scale — she stands five times your
+		# height and is often directly over you, so third-person's modest ceiling
+		# would hide the exact thing the scale exists to show. First person opens
+		# it right up; third keeps the tighter limit so the spring arm doesn't
+		# swing down through the floor.
+		var pitch_max := deg_to_rad(lerpf(25.0, 72.0, _fp_blend))
 		_pitch = clampf(_pitch - event.relative.y * mouse_sensitivity,
-			deg_to_rad(-55.0), deg_to_rad(25.0))
+			deg_to_rad(-55.0), pitch_max)
 	elif event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			# KEY_ESCAPE is owned by AppRoot._input (the pause menu) and consumed
@@ -3289,8 +3309,12 @@ func _update_camera(delta: float) -> void:
 	# eye height sits high in the bag, the cocoon/first-person distances are just
 	# far enough out to avoid clipping through it.
 	var bh := BagVisual.BAG_HEIGHT
-	var eye_h := bh * 0.87        # 0.78 on the original 0.9m bag
-	var cocoon_h := bh * 0.39     # 0.35
+	# Eye height is measured from the bag's FEET by BagVisual, but the pivot rides
+	# the body CENTRE — so subtract the half-height or the camera floats above your
+	# own head. The old value put it a third of a bag-height over the eyes, which
+	# is why "first person" never actually read as first person.
+	var eye_h := bh * (BagVisual.EYE_FRACTION - 0.5)
+	var cocoon_h := bh * 0.39     # 0.35 on the original 0.9m bag
 	var fp_dist := bh * 0.11      # 0.05
 	var cocoon_dist := bh * 0.13  # 0.12
 	_spring.position.x = cam_shoulder * (1.0 - _fp_blend)

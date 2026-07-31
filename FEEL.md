@@ -583,13 +583,27 @@ panel owns the digits first, so you can't hurl a can mid-code).
   and if that door is the back door the keys the dog just gave you are the key that opens
   it. Dropping them (or getting caught) leaves them on the floor for anyone to carry.
 
-## First-person toggle (`Main._update_camera`)
-**C** flips first/third; third is the default and your identity view — you watch your own
-googly-eyed bag *be a bag*. First person is opt-in and **forced back to third the moment
-you tumble** (a spinning first-person face-plant is a nausea machine, and the pratfall is
-the comedy beat you're meant to see) or get cocooned/spectate. Your own bag mesh hides only
-when the camera is fully inside it (`_fp_blend >= 0.85`), so you never see your own fabric
-whip past mid-blend.
+## First person (`Main._update_camera`) — the default
+**First person is ON by default**, and **C** flips out to third. At 0.45 m the first-person
+view is what actually sells a 3 m ceiling and a Housesitter five times your height; third
+person is the *opt-out*, for when you want to watch your own googly-eyed bag be a bag.
+
+Still **forced back to third the moment you tumble** (a spinning first-person face-plant is
+a nausea machine, and the pratfall is the comedy beat you're meant to see) or get
+cocooned/spectate. Your own bag mesh hides only when the camera is fully inside it
+(`_fp_blend >= 0.85`), so you never see your own fabric whip past mid-blend.
+
+**Behind the eyes, not above the head.** `BagVisual.EYE_FRACTION` (0.74) measures the eyes
+from the bag's **feet**, but the camera pivot rides the body **centre** — so the offset is
+`BAG_HEIGHT * (EYE_FRACTION - 0.5)`. Skip that half-height and the view floats a third of a
+bag above where you're actually looking from, which is why first person never read as first
+person before. The `first-person` selftest asserts the pivot sits at eye level, and that
+assertion was verified to fail against the old value.
+
+**Pitch opens up in first person** — the up-limit lerps 25° → 72° with `_fp_blend`. She is
+five times your height and often directly overhead; third-person's tighter ceiling (which
+stops the spring arm swinging through the floor) would hide the exact thing the scale exists
+to show.
 
 ## Hop economy — perches & clutter (`HouseSuburban`, `Fragment`)
 Stairs made hops a *choice* again; these make the choice interesting. **The rule: hops gate
