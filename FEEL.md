@@ -503,6 +503,42 @@ Three rules that all exist because a live playtest broke them:
   ghost state hasn't arrived yet is not a caught teammate. Ending a round on absent data
   is the worst possible false positive.
 
+## Scale — you are small, the house is not (`core/player/BagVisual.gd`)
+`BagVisual.BAG_HEIGHT = 0.45` is **the** number that sets the game's sense of scale, and
+everything that must physically *match* the bag derives from it: the collision capsule, the
+ground rays, the mouth a voice comes out of, the ghost bags for remote players. A mismatch
+between any of those and what you can see is a bug, not a tuning choice.
+
+Rooms are 3 m floor-to-floor and the Housesitter is 2.4 m, so she stands **5.3× your
+height** and a single storey is nearly 7 bag-heights. She needed no mesh change to become
+enormous — she just stopped being scaled down with you. (She also can't grow much past 2.4:
+interior clearance is ~2.7 m and she already hunches under doorways.)
+
+**House geometry is deliberately NOT scaled.** Shrinking the bag makes the house feel far
+bigger at zero cost to traversal time, the navmesh, stair geometry, or the 46 audited
+anchors. Absolute movement speeds are unchanged too, which is what keeps the speed ladder
+(shuffle 2.0 < monster 2.6 < hop-chain 3.6) and the 10-minute round intact.
+
+### Two traps this exposed — both caught by the physics tests
+1. **Torque does not scale like force.** Angular acceleration is `torque / inertia`, and
+   inertia goes as `mass·r²` — so halving the bag *quarters* its inertia and makes every
+   torque constant **4× as strong**. The first rescale pass had the bag spinning out, living
+   in `TUMBLED`, unable to hop (the hop gate only runs in `NORMAL`) and cartwheeling off the
+   stairs into the void. `Player._torque_scale` = `(BAG_HEIGHT / 0.9)²` corrects the upright
+   spring, hop wobble, faceplant and recovery kicks. Linear forces need no such fix —
+   `a = F/m`, and mass is unchanged.
+2. **Ground-ray length must scale.** `grounded` is true whenever a ray reaches floor, and the
+   hop gate (`grounded and velocity.y < 1.5`) only blocks the *ascent*. An unscaled 1.0 m ray
+   on a half-size bag reports grounded most of the way down — a **free second hop**, quietly
+   doubling the stamina economy. `_selftest_hop_economy` now asserts a mid-flight hop is
+   refused, and that assertion was verified to fail against the unscaled ray.
+
+Reach values (`Objective/Fragment/Item.NEAR` = 1.2, `rescue_range` = 1.1) and camera
+framing scale *with* the bag but are kept as their own numbers — those are FEEL, and want
+tuning independently of body size. Reach is deliberately a little more generous than strict
+proportion: *"objectives weren't letting me hold E"* was a real report, and a fiddly reach
+is worse than a slightly forgiving one.
+
 ## Items + the 2-slot inventory (`games/sleepover/Item.gd`, `Main.gd`)
 Two slots. That's the whole design: the keys take one, so every can you hoard is a
 **choice**. Item pickups ride the same nearest-wins E arbitration and the same slow, loud
@@ -518,6 +554,15 @@ panel owns the digits first, so you can't hurl a can mid-code).
   the flight is garnish), pings `NoiseBus` **there**, and stays on the floor to be
   re-grabbed. Noise somewhere else, on purpose. It is a **pure decoy**: it does not lure
   the dog and can never substitute for the jerky.
+
+  > **Findability is a feature.** A whole playtest finished with *nobody finding a
+  > throwable*: 4 items over 10 spots across four floors, in rooms players had no reason to
+  > enter. Item props are **not** scaled down with the bag (they're household objects in a
+  > human house), so at 0.45 m they're relatively twice as prominent — and on top of that
+  > `ITEM_SPOTS` is weighted toward high-traffic rooms, counts went to 6 cans + 2 poppers,
+  > and `_pick_items()` **pins one can to the spot nearest the spawn** so the mechanic
+  > teaches itself in the first twenty seconds. The `items` selftest asserts that starter
+  > can exists on the spawn floor; if it regresses, players stop meeting items at all.
 
   > **Why the Dog objective's clue is BEEF JERKY, not "snack".** A thrown can is dog food,
   > so two dog-food pickups that behave differently is a confusion players walk straight
@@ -551,16 +596,24 @@ Stairs made hops a *choice* again; these make the choice interesting. **The rule
 shortcuts and OPTIONAL loot, NEVER a required objective.** Measured flat hop apex is
 **0.82 m**, and both props are tuned against that number by the `hop-economy` physics test:
 
-- **Perches** — crate furniture (0.5 m tall, 1.7 m pad) with a lore fragment on **top**.
-  `Fragment.near()` carries a height gate (your grab must come from at-or-above the
-  fragment), so you cannot fish it off the floor — you hop up. Optional risk/reward only;
-  objective clues never spawn on a perch.
-- **Clutter** — toy piles (0.4 m tall) parked in a doorway. Tall enough to wedge a
-  shuffling bag, but a **thin hurdle** (0.35 m deep) in the travel axis so a *running* hop
+Both props are sized against the **bag**, not the house — they're gameplay furniture, so
+they scale with `BAG_HEIGHT` rather than staying human-scale like clue props do.
+
+- **Perches** — crate furniture (0.3 m tall ≈ 0.67 bag-heights, 1.2 m pad) with a lore
+  fragment on **top**. `Fragment.near()` carries a height gate (your grab must come from
+  at-or-above the fragment), so you cannot fish it off the floor — you hop up. Optional
+  risk/reward only; objective clues never spawn on a perch.
+- **Clutter** — toy piles (0.2 m tall) parked in a doorway. Tall enough to wedge a
+  shuffling bag, but a **thin hurdle** (0.2 m deep) in the travel axis so a *running* hop
   sails over — a deep pile is a wall (launch pressed against its face and the collision
   eats your forward momentum before you clear the top). Every cluttered doorway belongs to
   a room **loop** whose other door stays clear, and the monster routes around it on the
   navmesh, so the hop buys **seconds, never passage**.
+
+  > **Keep them rare** — two, on different floors. At half the bag's height in *every*
+  > doorway they stopped being a decision and became a tax on walking around, and at the
+  > pre-rescale 0.4 m they read as shoulder-high barricades: still hoppable, but oppressive
+  > rather than playful.
 
 ## Pause + getting out (`core/ui/AppRoot.gd`)
 **Esc → RESUME · SETTINGS · LEAVE GAME**, drawn over the live 3D world.

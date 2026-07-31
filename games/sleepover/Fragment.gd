@@ -6,7 +6,7 @@ extends Node3D
 ## host-authoritative and syncs to everyone (once per lobby per round), then the
 ## content flows into each player's persistent Scrapbook.
 
-const NEAR := 2.0   ## interaction reach (m), matches Objective.NEAR
+const NEAR := 1.2   ## interaction reach (m), matches Objective.NEAR
 
 var data: Dictionary = {}   ## {id, type, title, body}
 var collected: bool = false

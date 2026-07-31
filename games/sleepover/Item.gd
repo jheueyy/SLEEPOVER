@@ -9,7 +9,7 @@ extends Node3D
 
 enum Kind { CAN, POPPER, KEYS }
 
-const NEAR := 2.0   ## interaction reach (m), matches Objective/Fragment
+const NEAR := 1.2   ## interaction reach (m), matches Objective/Fragment
 
 ## Display + gray-box prop data per kind. Tone law: creepy-cute household
 ## clutter, nothing that reads as a weapon.

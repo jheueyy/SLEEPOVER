@@ -32,9 +32,11 @@ const S := 1.4
 
 # Where players wake up (living room). Slot 0 = host/solo, clients pick 1+.
 # (Already in world units — these are consts, so they're pre-scaled by hand.)
+# y is a small drop-in, not a fall: at 0.45m tall the old y=1.0 was more than two
+# bag-heights above the floor and read as being dropped into the room.
 const SPAWNS: Array[Vector3] = [
-	Vector3(-7.0, 1.0, 1.4), Vector3(-4.9, 1.0, 2.1), Vector3(-8.4, 1.0, 3.5),
-	Vector3(-4.9, 1.0, 4.2), Vector3(-7.0, 1.0, 5.6), Vector3(-9.1, 1.0, 5.3),
+	Vector3(-7.0, 0.5, 1.4), Vector3(-4.9, 0.5, 2.1), Vector3(-8.4, 0.5, 3.5),
+	Vector3(-4.9, 0.5, 4.2), Vector3(-7.0, 0.5, 5.6), Vector3(-9.1, 0.5, 5.3),
 ]
 # The ATTIC — it sleeps up there at round start, two staircases and half a
 # house from the living room. Waking up is an event, not a spawn.
@@ -238,8 +240,8 @@ const DEADBOLT_SPOT := Vector3(-6.5, 0.0, -5.6)
 # risk/reward only — objective clues never spawn here. Kept BROAD (a 1.7m
 # footprint, > the flat hop apex of 0.82m is tall) so a hopping capsule reliably
 # lands ON it rather than clipping an edge and sliding off.
-const PERCH_H := 0.5
-const PERCH_W := 1.7   # world metres, wide enough to be a landing pad
+const PERCH_H := 0.3   # ~0.67 bag-heights: clamber up, not a wall
+const PERCH_W := 1.2   # world metres, still a generous pad for a 0.45m bag
 const PERCHES: Array = [
 	Vector3(-5.5, 0.0, 1.5),    # living room crate (ground)
 	Vector3(-3.0, 3.0, 4.0),    # master bedroom dresser (upstairs)
@@ -255,13 +257,17 @@ const PERCHES: Array = [
 # hop buys seconds, never passage. `depth` is the thin travel axis, `span` fills
 # the doorway; `axis` = "z" when you cross the doorway moving in z (wall runs
 # along x), "x" otherwise.
-const CLUTTER_H := 0.4
-const CLUTTER_DEPTH := 0.35   # world metres along the travel axis — a hurdle, not a wall
+## Sized against the BAG, not the house: at 0.9m these were 0.4 tall, so a 0.45m
+## bag gets 0.2 — the same "hop it" proportion. Left at 0.4 they read as
+## shoulder-high barricades in every doorway, which is oppressive rather than
+## playful even though the hop still clears them.
+## Kept RARE on purpose. Two, on different floors: an obstacle you meet in every
+## doorway stops being a decision and becomes a tax on walking around.
+const CLUTTER_H := 0.2
+const CLUTTER_DEPTH := 0.2    # world metres along the travel axis — a hurdle, not a wall
 const CLUTTER: Array = [
 	# kitchen|living doorway — the loop living->hall->dining->kitchen stays clear
 	{"at": Vector2(-5.5, -1.0), "span": 1.6, "base": 0.0, "axis": "z"},
-	# dining|pantry doorway — the pantry keeps its laundry AND garage doors
-	{"at": Vector2(2.0, -3.5), "span": 1.6, "base": 0.0, "axis": "x"},
 	# master|landing loop door — the master's corridor door stays clear
 	{"at": Vector2(-1.0, 3.0), "span": 1.6, "base": 3.0, "axis": "x"},
 ]
@@ -276,17 +282,30 @@ static func perch_tops() -> Array[Vector3]:
 # round start. Kid-mess placement: the FLOORS of rooms, not shelves — you trip
 # over these, you don't hunt for them. Spread over all four levels so item
 # greed pulls players the same directions the clues do.
+## Weighted toward HIGH-TRAFFIC rooms, not just far corners. A whole playtest
+## finished without anyone finding a throwable: too few items, spread over four
+## floors, in rooms players had no reason to enter. Main also pins one can to
+## whichever of these is nearest the spawn (see `_pick_items`).
 const ITEM_SPOTS: Array = [
-	Vector3(-3.0, 0.0, 4.5),    # living room rug (ground)
-	Vector3(-6.8, 0.0, 0.5),    # kitchen corner (ground)
-	Vector3(4.5, 0.0, -1.5),    # laundry hall (ground)
-	Vector3(2.5, 0.0, 5.5),     # by the front entry (ground)
-	Vector3(6.8, 0.0, 3.0),     # garage floor (ground)
-	Vector3(-6.8, 3.0, -1.0),   # master bedroom floor (upstairs)
-	Vector3(-2.5, 3.0, -4.5),   # kid room 2 floor (upstairs)
-	Vector3(1.5, 3.0, 1.5),     # upstairs corridor (upstairs)
-	Vector3(-2.0, -3.0, 0.0),   # basement rec middle (basement)
-	Vector3(-4.0, 6.0, -3.0),   # attic floor (attic)
+	# Ground — the living room is where everyone wakes up, the hall is the artery.
+	Vector3(-3.0, 0.0, 4.5),    # living room rug
+	Vector3(-5.5, 0.0, 3.0),    # living room, mid-floor (near the spawns)
+	Vector3(-6.8, 0.0, 0.5),    # living room far corner
+	Vector3(1.2, 0.0, 3.0),     # hall walking lane (east of the stair shaft)
+	Vector3(2.5, 0.0, 5.5),     # by the front entry
+	Vector3(-5.0, 0.0, -4.0),   # kitchen floor
+	Vector3(0.0, 0.0, -4.0),    # dining floor
+	Vector3(4.5, 0.0, -1.5),    # laundry hall
+	Vector3(3.5, 0.0, 4.5),     # bathroom floor
+	Vector3(6.8, 0.0, 3.0),     # garage floor
+	# Upstairs
+	Vector3(-6.8, 3.0, -1.0),   # master bedroom floor
+	Vector3(-2.5, 3.0, -4.5),   # kid room 2 floor
+	Vector3(1.5, 3.0, 1.5),     # upstairs corridor
+	Vector3(1.0, 3.0, 4.0),     # upstairs landing
+	# The dread floors
+	Vector3(-2.0, -3.0, 0.0),   # basement rec middle
+	Vector3(-4.0, 6.0, -3.0),   # attic floor
 ]
 
 # The Garage Code: birthday clue somewhere (any floor), keypad by the garage door.

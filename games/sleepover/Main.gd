@@ -18,9 +18,13 @@ enum Phase { LOBBY, LIGHTS_OUT, ROUND, RESULTS }
 @export var outro_duration: float = 6.0      ## sunrise / all-cocooned bookend length (<=10s)
 
 @export_group("Camera")
-@export var cam_height: float = 0.9
-@export var cam_distance: float = 2.2
-@export var cam_shoulder: float = 0.35
+# Scaled for a 0.45m bag (BagVisual.BAG_HEIGHT). A low, close camera is the
+# single biggest lever on perceived scale — it's what makes doorways loom and the
+# Housesitter read as five times your height. Kept as plain numbers, not derived,
+# because camera framing is FEEL and wants tuning independently of body size.
+@export var cam_height: float = 0.45
+@export var cam_distance: float = 1.1
+@export var cam_shoulder: float = 0.18
 @export var mouse_sensitivity: float = 0.004
 @export var cam_pitch_default: float = -6.0
 @export var fov_base: float = 70.0
@@ -28,7 +32,7 @@ enum Phase { LOBBY, LIGHTS_OUT, ROUND, RESULTS }
 @export var chase_range: float = 8.0
 
 @export_group("Rescue")
-@export var rescue_range: float = 1.9
+@export var rescue_range: float = 1.1     ## scaled for a 0.45m bag; see Objective.NEAR
 @export var rescue_time: float = 5.0
 @export var rescue_zipper_at: float = 3.0   ## the loud zipper ping mid-rescue
 @export var zipper_loudness: float = 0.9
@@ -146,8 +150,8 @@ var _keys_door_open: bool = false        ## HOUSE KEYS turned in the back door l
 @export var can_loudness: float = 0.9         ## the thud where it lands — a real decoy
 @export var popper_loudness: float = 1.0      ## the bang — loudest thing you can do
 @export var popper_flinch_secs: float = 2.0   ## how long she recoils
-@export var item_can_count: int = 3           ## cans scattered per round
-@export var item_popper_count: int = 1        ## poppers per round (scarce on purpose)
+@export var item_can_count: int = 6           ## cans per round, incl. the guaranteed starter
+@export var item_popper_count: int = 2        ## poppers per round (still the scarce one)
 
 # Glasses blur (post-process on the one blurred player)
 var _blur_overlay: ColorRect
@@ -617,15 +621,23 @@ func _selftest_playtest_fixes() -> bool:
 		_player.global_position = probe_p
 		var g2 := _spawn_remote_bag(4243)
 		g2.set_meta("cocooned", true)
+		# Place the caught friend either side of the objective's distance, DERIVED
+		# from the live constants — hardcoded gaps stopped fitting once reach and
+		# rescue_range scaled down with the bag, and a test that only passes at one
+		# bag size is a trap. The two guards below assert the placement is
+		# genuinely on the far/near side rather than clamped past it.
+		var far_d := minf(od + 0.15, rescue_range - 0.02)
+		var near_d := maxf(od - 0.2, 0.05)
 		# Caught friend in reach but FARTHER than the objective -> objective keeps E.
-		g2.global_position = probe_p + Vector3(0, 0, minf(od + 0.4, rescue_range - 0.05))
+		g2.global_position = probe_p + Vector3(0, 0, far_d)
 		_update_rescue(0.0)
 		var obj_wins: bool = str(_interact_focus()["kind"]) == "objective"
 		# Closer than the objective -> the rescue takes it back.
-		g2.global_position = probe_p + Vector3(0, 0, maxf(od - 0.3, 0.05))
+		g2.global_position = probe_p + Vector3(0, 0, near_d)
 		_update_rescue(0.0)
 		var rescue_wins: bool = str(_interact_focus()["kind"]) == "rescue"
-		focus_ok = od + 0.4 < rescue_range and obj_wins and rescue_wins
+		var placeable := far_d > od and near_d < od and far_d < rescue_range
+		focus_ok = placeable and obj_wins and rescue_wins
 		_despawn_test_ghost(4243)
 		_rescue_target = null
 
@@ -726,6 +738,16 @@ func _selftest_items() -> bool:
 	_host_start_round()
 	_apply_phase(Phase.ROUND, {})
 	var spawned := _items.size() == item_can_count + item_popper_count
+	# A can must sit on the spawn floor, close enough to be seen on the way out
+	# of the living room. This is the fix for "no throwables found" — if it ever
+	# regresses, players stop meeting the item system at all.
+	var spawn0: Vector3 = HouseSuburban.SPAWNS[0]
+	var starter_near := false
+	for it: Item in _items:
+		if it.kind == Item.Kind.CAN and absf(it.position.y - spawn0.y) < 1.5 \
+				and Vector2(it.position.x - spawn0.x, it.position.z - spawn0.z).length() < 6.0:
+			starter_near = true
+			break
 
 	# Pickup: stand on a can, the focus arbitration must hand E to it, and
 	# committing the claim must fill slot 1 and void the world prop.
@@ -809,10 +831,10 @@ func _selftest_items() -> bool:
 	dog_untouched = not _done_ids.has("dog") and not _inv_has(Item.Kind.KEYS) \
 		and not dog_o.done
 
-	var ok := spawned and focus_item and picked and full_skips and thrown \
+	var ok := spawned and starter_near and focus_item and picked and full_skips and thrown \
 		and flinched and investigates and dropped and dog_reacts and dog_untouched
-	print("[SELFTEST] items: spawned=%s pickup(focus=%s slot=%s) hands-full-skips=%s "
-		% [spawned, focus_item, picked, full_skips]
+	print("[SELFTEST] items: spawned=%s starter-near-spawn=%s pickup(focus=%s slot=%s) hands-full-skips=%s "
+		% [spawned, starter_near, focus_item, picked, full_skips]
 		+ "throw=%s popper(flinch=%s investigates=%s) cocoon-drop=%s "
 		% [thrown, flinched, investigates, dropped]
 		+ "can-vs-dog(sniffs=%s no-shortcut=%s) -> %s"
@@ -1130,11 +1152,39 @@ func _selftest_hop_economy() -> bool:
 	var top_reaches := fr.near(_player.global_position)
 	fr.queue_free()
 	_player.test_move = Vector3.ZERO
-	var ok := blocked and crossed and spent_one and floor_denied and hop_clears and top_reaches
+
+	# C) NO DOUBLE HOP. `grounded` is true whenever a ground ray reaches floor, so
+	# a ray that doesn't scale with the bag reports grounded while airborne — and
+	# the hop gate (`grounded and velocity.y < 1.5`) only blocks the ASCENT. The
+	# result is a free second hop on the way down, which would quietly double the
+	# stamina economy the whole game is built on. Spam the hop mid-flight: the tank
+	# must not move.
+	_reset_test_bag(HouseSuburban.scaled(Vector3(-5.0, 0.4, 3.5)))
+	for _i in 20:
+		await get_tree().physics_frame
+	_player._hop_queued = true
+	await get_tree().physics_frame
+	var after_hop: float = _player.stamina
+	var airborne := 0
+	var no_double := true
+	for _i in 90:
+		await get_tree().physics_frame
+		if not _player.grounded:
+			airborne += 1
+			_player._hop_queued = true          # try to cheat a second hop
+			if _player.stamina < after_hop - 0.01:
+				no_double = false
+	_player._hop_queued = false
+	# Guard against a vacuous pass: it must actually have left the ground.
+	var single_hop := no_double and airborne > 10 and after_hop <= _player.stamina_max - 0.9
+
+	var ok := blocked and crossed and spent_one and floor_denied and hop_clears \
+		and top_reaches and single_hop
 	print("[SELFTEST] hop-economy: clutter(shuffle-blocked=%s hop-crosses=%s cost-1=%s) "
 		% [blocked, crossed, spent_one]
-		+ "perch(floor-denied=%s hop-clears-height=%s reach-on-top=%s) -> %s"
-		% [floor_denied, hop_clears, top_reaches, ok])
+		+ "perch(floor-denied=%s hop-clears-height=%s reach-on-top=%s) "
+		% [floor_denied, hop_clears, top_reaches]
+		+ "no-double-hop=%s(%d airborne frames) -> %s" % [single_hop, airborne, ok])
 	return ok
 
 func _reset_test_bag(at: Vector3) -> void:
@@ -1669,10 +1719,31 @@ func _pick_fragments(used: Array[Vector3]) -> Array:
 ## so throws can mint fresh ones without colliding.
 func _pick_items() -> Array:
 	var spots: Array = HouseSuburban.ITEM_SPOTS.duplicate()
-	spots.shuffle()
 	var out: Array = []
+	# STARTER CAN: always place one on the spot nearest where everyone wakes up.
+	# A whole playtest finished with nobody finding a throwable, and an item you
+	# never meet may as well not be in the game — this makes the mechanic teach
+	# itself in the first twenty seconds instead of relying on a lucky wander.
+	var spawn: Vector3 = HouseSuburban.SPAWNS[0]
+	var nearest := -1
+	var best := INF
+	for i in spots.size():
+		var w: Vector3 = HouseSuburban.scaled(spots[i])
+		if absf(w.y - spawn.y) > 1.5:
+			continue  # same floor as the spawn only
+		var d := Vector2(w.x - spawn.x, w.z - spawn.z).length()
+		if d < best:
+			best = d
+			nearest = i
+	if nearest != -1:
+		out.append({"uid": _item_uid_next, "kind": Item.Kind.CAN,
+			"at": HouseSuburban.scaled(spots[nearest])})
+		_item_uid_next += 1
+		spots.remove_at(nearest)
+
+	spots.shuffle()
 	var kinds: Array[int] = []
-	for _i in item_can_count:
+	for _i in maxi(item_can_count - out.size(), 0):
 		kinds.append(Item.Kind.CAN)
 	for _i in item_popper_count:
 		kinds.append(Item.Kind.POPPER)
@@ -2086,8 +2157,11 @@ func _apply_item_taken(uid: int, by_pid: int) -> void:
 func _drop_inventory() -> void:
 	for slot in _inv.size():
 		if _inv[slot] != -1:
+			# Spill to either side of the bag — offsets are bag-relative so the
+			# two items don't land inside each other at a smaller scale.
+			var side := BagVisual.BAG_HEIGHT * 0.45 * (slot * 2 - 1)
 			_request_spawn_item(_inv[slot], _player.global_position
-				+ Vector3(0.4 * (slot * 2 - 1), 0.05, 0.3))
+				+ Vector3(side, 0.05, BagVisual.BAG_HEIGHT * 0.35))
 			_inv[slot] = -1
 	_refresh_inv_hud()
 
@@ -2255,7 +2329,9 @@ func _on_keys_granted(at: Vector3) -> void:
 func _near_back_door() -> bool:
 	for e: Dictionary in HouseSuburban.exits():
 		if e["name"] == "BACK DOOR":
-			return _player.global_position.distance_to(e["at"]) < 3.0
+			# "At the door" — scaled down with the bag, but still looser than a
+			# normal interact reach so the turn-the-keys moment isn't pixel-hunting.
+			return _player.global_position.distance_to(e["at"]) < 1.6
 	return false
 
 func _request_keys_turned() -> void:
@@ -3208,9 +3284,18 @@ func _update_camera(delta: float) -> void:
 	# Your own bag disappears only when the camera is fully inside it — mid-blend
 	# you'd see your own fabric whip past, which reads as a glitch.
 	_player.visible = _fp_blend < 0.85
+	# These blend targets are BAG-relative (eyes inside the bag, camera pulled
+	# into the fabric), so they scale with BAG_HEIGHT or they fight the body size:
+	# eye height sits high in the bag, the cocoon/first-person distances are just
+	# far enough out to avoid clipping through it.
+	var bh := BagVisual.BAG_HEIGHT
+	var eye_h := bh * 0.87        # 0.78 on the original 0.9m bag
+	var cocoon_h := bh * 0.39     # 0.35
+	var fp_dist := bh * 0.11      # 0.05
+	var cocoon_dist := bh * 0.13  # 0.12
 	_spring.position.x = cam_shoulder * (1.0 - _fp_blend)
-	_spring.spring_length = lerpf(lerpf(cam_distance, 0.05, _fp_blend), 0.12, _cocoon_cam)
-	var h := lerpf(lerpf(cam_height, 0.78, _fp_blend), 0.35, _cocoon_cam)
+	_spring.spring_length = lerpf(lerpf(cam_distance, fp_dist, _fp_blend), cocoon_dist, _cocoon_cam)
+	var h := lerpf(lerpf(cam_height, eye_h, _fp_blend), cocoon_h, _cocoon_cam)
 	var follow: Vector3 = watch.global_position if watch != null else _player.global_position
 	var target := follow + Vector3.UP * h
 	# In first person the pivot must track the body hard, or your eyes drag
@@ -3436,9 +3521,11 @@ func _spawn_remote_bag(pid: int) -> Node3D:
 	# Use the peer's chosen skin from the roster (they reported it); fall back to
 	# the deterministic per-peer skin if the roster doesn't carry one.
 	var skin := int(LobbyManager.players.get(pid, {}).get("skin", BagVisual.skin_for_peer(pid)))
-	var built := BagVisual.build_with_eyes(0.9, skin)
+	# Same size as the local bag — this is a SECOND call site, so a hardcoded
+	# height here renders every remote player at the wrong scale.
+	var built := BagVisual.build_with_eyes(BagVisual.BAG_HEIGHT, skin)
 	var bag: Node3D = built[0]
-	bag.position = Vector3(0, -0.45, 0)
+	bag.position = Vector3(0, -BagVisual.BAG_HEIGHT * 0.5, 0)
 	ghost.add_child(bag)
 	add_child(ghost)
 	ghost.global_position = _player.global_position

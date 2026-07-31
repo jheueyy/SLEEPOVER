@@ -75,6 +75,16 @@ var _hop_queued: bool = false
 var _was_grounded: bool = true
 var _spawn_grace: float = 0.0  ## suppress landing noise right after (re)spawn
 
+## Every torque value below was tuned against a 0.9m bag. Torque produces angular
+## acceleration = torque / moment of inertia, and inertia goes as mass·r² — so it
+## does NOT scale with size the way linear forces do. Halving the bag quarters its
+## inertia and makes every one of those constants 4x as strong: the bag spins out,
+## lives in TUMBLED, and can never hop (the hop gate only runs in NORMAL). This
+## factor keeps the angular FEEL identical at any BagVisual.BAG_HEIGHT.
+## Linear forces need no such treatment — a·= F/m, and mass is unchanged.
+const TORQUE_TUNED_AT_HEIGHT := 0.9
+var _torque_scale: float = 1.0
+
 var _ground_rays: Array[RayCast3D] = []
 var _visual: Node3D
 var _eyes: BagEyes
@@ -90,10 +100,14 @@ func _ready() -> void:
 	can_sleep = false
 	collision_mask = 0b11  # world (1) + invisible stair ramps (2)
 
+	# Body proportions all derive from BagVisual.BAG_HEIGHT so the collider can
+	# never drift out of sync with the thing you can see.
+	var h := BagVisual.BAG_HEIGHT
+	_torque_scale = pow(h / TORQUE_TUNED_AT_HEIGHT, 2.0)
 	var shape := CollisionShape3D.new()
 	var capsule := CapsuleShape3D.new()
-	capsule.radius = 0.30
-	capsule.height = 0.9  # concept-sheet scale: the bag is ~0.9m tall
+	capsule.radius = h / 3.0   # 0.30 at the original 0.9m height
+	capsule.height = h
 	shape.shape = capsule  # upright — a person standing in a bag
 	add_child(shape)
 
@@ -101,11 +115,17 @@ func _ready() -> void:
 
 	# Five ground rays (center + 4 offsets): a single center ray misses when
 	# the bag bridges two stair treads, which blocked hopping on staircases.
-	for off: Vector2 in [Vector2.ZERO, Vector2(0.25, 0), Vector2(-0.25, 0),
-			Vector2(0, 0.25), Vector2(0, -0.25)]:
+	var spread := h * 0.28   # 0.25 at 0.9m — just inside the capsule radius
+	for off: Vector2 in [Vector2.ZERO, Vector2(spread, 0), Vector2(-spread, 0),
+			Vector2(0, spread), Vector2(0, -spread)]:
 		var ray := RayCast3D.new()
 		ray.position = Vector3(off.x, 0.0, off.y)
-		ray.target_position = Vector3(0.0, -1.0, 0.0)
+		# MUST scale with the bag. `grounded` is true whenever a ray reaches the
+		# floor, so an over-long ray reports grounded while you're airborne — and
+		# the hop gate (`grounded and velocity.y < 1.5`) only blocks the ASCENT,
+		# so a fixed 1.0 here would hand a half-size bag a free second hop on the
+		# way down. Reaches ~0.28m below the feet, as it always did.
+		ray.target_position = Vector3(0.0, -h * 1.11, 0.0)
 		ray.enabled = true
 		# Must match the body's mask (world + stair ramps). RayCast3D defaults to
 		# layer 1 ONLY, so these never saw the layer-2 stair ramps — which is why
@@ -147,10 +167,11 @@ func set_spawn(xform: Transform3D) -> void:
 func set_skin(skin: int) -> void:
 	if _visual != null:
 		_visual.queue_free()
-	var built := BagVisual.build_with_eyes(0.9, skin)
+	var built := BagVisual.build_with_eyes(BagVisual.BAG_HEIGHT, skin)
 	_visual = built[0]
 	_eyes = built[1]
-	_visual.position = Vector3(0, -0.45, 0)  # bag base at the capsule's bottom
+	# Bag base at the capsule's bottom — half the height, whatever the height is.
+	_visual.position = Vector3(0, -BagVisual.BAG_HEIGHT * 0.5, 0)
 	add_child(_visual)
 
 ## Eye mood from local state. ALERT (monster near) is layered on by Main, which
@@ -199,7 +220,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.keycode in DIR_KEYS and state == State.TUMBLED:
 		# Mash to wriggle upright — each press is one wriggle.
 		recover_progress += 1.0
-		apply_torque_impulse(_upright_axis() * recover_mash_kick)
+		apply_torque_impulse(_upright_axis() * recover_mash_kick * _torque_scale)
 
 # ── Physics ────────────────────────────────────────────────────────────────
 
@@ -333,12 +354,13 @@ func _launch_hop(dir: Vector3) -> void:
 	var burst := dir * hop_speed + Vector3.UP * hop_up_speed
 	apply_central_impulse(burst * mass)
 	# A random little lean per hop — every hop is a small gamble.
-	apply_torque_impulse(Vector3(randf_range(-1, 1), 0, randf_range(-1, 1)) * hop_wobble_torque)
+	apply_torque_impulse(Vector3(randf_range(-1, 1), 0, randf_range(-1, 1))
+		* hop_wobble_torque * _torque_scale)
 
 func _faceplant() -> void:
 	# Hopped on an empty tank: lunge forward and eat the floor.
 	apply_central_impulse(facing * 2.0 * mass)
-	apply_torque_impulse(Vector3.UP.cross(facing) * faceplant_kick)
+	apply_torque_impulse(Vector3.UP.cross(facing) * faceplant_kick * _torque_scale)
 	_tumble()
 
 func _tumble() -> void:
@@ -368,5 +390,5 @@ func _upright_axis() -> Vector3:
 func _apply_upright_spring(scale: float) -> void:
 	var axis := _upright_axis()
 	if axis != Vector3.ZERO:
-		apply_torque(axis * _tilt_angle() * upright_stiffness * scale)
-	apply_torque(-angular_velocity * upright_damping * scale)
+		apply_torque(axis * _tilt_angle() * upright_stiffness * scale * _torque_scale)
+	apply_torque(-angular_velocity * upright_damping * scale * _torque_scale)

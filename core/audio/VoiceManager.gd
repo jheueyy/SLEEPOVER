@@ -260,7 +260,7 @@ func register_player(pid: int, parent: Node3D) -> void:
 	p.unit_size = VOICE_UNIT_SIZE
 	p.volume_db = VOICE_VOLUME_DB
 	p.attenuation_model = AudioStreamPlayer3D.ATTENUATION_INVERSE_DISTANCE
-	p.position = Vector3(0, 0.7, 0)  # mouth height on a 0.9m bag
+	p.position = Vector3(0, BagVisual.BAG_HEIGHT * 0.78, 0)  # mouth height on the bag
 	parent.add_child(p)
 	p.play()
 	_players[pid] = p

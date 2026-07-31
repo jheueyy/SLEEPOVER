@@ -14,7 +14,11 @@ signal keys_granted(at: Vector3)  ## DOG only: the hand-off puts HOUSE KEYS in a
 
 enum Tracker { NOT_STARTED, IN_PROGRESS, DONE }
 
-const NEAR := 2.0        ## interaction reach (m)
+## Interaction reach (m). Scaled for a 0.45m bag, but NOT all the way down to
+## strict proportion — "objectives weren't letting me hold E" was a real playtest
+## report, and a fiddly reach is worse than a slightly generous one. Fragment and
+## Item deliberately match this number.
+const NEAR := 1.2
 const DIAL_TIME := 1.5   ## landline per-digit rotary windup
 const DOG_SPEED := 0.9   ## the dog's amble (m/s) — slow, wandering pet
 

@@ -1,9 +1,21 @@
 class_name BagVisual
 extends Object
 ## Procedural sleeping-bag character matching the concept sheet 1:1 in
-## silhouette, palette, and proportion (~0.9m tall): puffy stacked quilt
-## segments, a front zipper with pull tab, and two big googly eyes.
+## silhouette, palette, and proportion: puffy stacked quilt segments, a front
+## zipper with pull tab, and two big googly eyes.
 ## One builder, eight skins — the launch cosmetic list is a data table.
+
+## THE canonical bag height, and the one number that sets the game's sense of
+## scale. Everything that must physically MATCH the bag derives from it — the
+## collision capsule, the ground rays, the mouth height a voice comes out of.
+## A mismatch between any of those and the visual is a bug, not a tuning choice.
+##
+## Rooms are 3m floor-to-floor and the Housesitter is 2.4m, so at 0.45 she stands
+## 5.3x your height and a single storey is nearly 7 bag-heights: you are a small
+## thing loose in a full-sized house. Camera and reach values are scaled to match
+## but kept as their own numbers, because those are FEEL and want independent
+## tuning. House geometry is deliberately NOT scaled — see FEEL.md.
+const BAG_HEIGHT := 0.45
 
 const SKINS: Array = [
 	{"name": "CLASSIC RED", "base": Color(0.82, 0.12, 0.12)},
@@ -21,11 +33,13 @@ static func skin_for_peer(peer_id: int) -> int:
 	return 0 if peer_id == 1 else peer_id % SKINS.size()
 
 ## Builds the bag and returns just the visual root (eyes idle).
-static func build(height: float = 0.9, skin: int = 0) -> Node3D:
+static func build(height: float = BAG_HEIGHT, skin: int = 0) -> Node3D:
 	return build_with_eyes(height, skin)[0]
 
 ## Builds the bag AND returns [root, BagEyes] so a caller can drive eye-states.
-static func build_with_eyes(height: float = 0.9, skin: int = 0) -> Array:
+## Every segment is a fraction of `height`, so the whole character scales from
+## the one number.
+static func build_with_eyes(height: float = BAG_HEIGHT, skin: int = 0) -> Array:
 	var root := Node3D.new()
 	var base_col: Color = SKINS[skin % SKINS.size()]["base"]
 
