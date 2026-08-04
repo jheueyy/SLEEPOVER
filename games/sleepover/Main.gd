@@ -861,7 +861,35 @@ func _selftest_first_person() -> bool:
 	_first_person = true
 	for _i in 60:
 		_update_camera(1.0 / 30.0)
-	var fp_on := _fp_blend > 0.9 and not _player.visible and _spring.spring_length < 0.3
+	var head_bit := SleepingBagPlayer.OWN_HEAD_LAYER
+	# The bag stays VISIBLE now; only the own-head render layer is culled.
+	var fp_on := _fp_blend > 0.9 and _player.visible and _spring.spring_length < 0.3 \
+		and not _camera.get_cull_mask_value(head_bit)
+
+	# THE BODY SURVIVES THE CULL. If every part ended up tagged as head, "see your
+	# body" silently becomes "see nothing" again and nothing else would notice.
+	var body_parts := 0
+	var head_parts := 0
+	for child in _player._visual.get_children():
+		var vis := child as VisualInstance3D
+		if vis == null:
+			continue
+		if vis.layers == SleepingBagPlayer.OWN_HEAD_LAYER_BIT:
+			head_parts += 1
+		else:
+			body_parts += 1
+	var body_kept := body_parts >= 4 and head_parts >= 4
+
+	# THE NETWORKING TRAP: a teammate's bag must NOT be on the own-head layer, or
+	# going first-person also blanks their googly eyes — the one failure here most
+	# likely to ship unnoticed, since solo play looks perfect.
+	var ghost := _spawn_remote_bag(4245)
+	var ghost_untagged := true
+	for child in ghost.get_child(0).get_children():
+		var vis := child as VisualInstance3D
+		if vis != null and vis.layers == SleepingBagPlayer.OWN_HEAD_LAYER_BIT:
+			ghost_untagged = false
+	_despawn_test_ghost(4245)
 	# BEHIND THE EYES, not above the head. The camera pivot rides the body CENTRE
 	# while BagVisual measures eyes from the FEET, so a missing half-height offset
 	# silently floats the view a third of a bag above where you're looking from —
@@ -872,17 +900,23 @@ func _selftest_first_person() -> bool:
 	_player.state = SleepingBagPlayer.State.TUMBLED
 	for _i in 60:
 		_update_camera(1.0 / 30.0)
+	# Back in third: the head must be drawn again, or you'd watch a headless bag.
 	var tumble_forces_third := _fp_blend < 0.1 and _player.visible \
-		and _spring.spring_length > cam_distance * 0.8
+		and _spring.spring_length > cam_distance * 0.8 \
+		and _camera.get_cull_mask_value(head_bit)
 	_player.state = SleepingBagPlayer.State.NORMAL
 	_first_person = false
 	for _i in 60:
 		_update_camera(1.0 / 30.0)
-	var back_out := _player.visible and _fp_blend < 0.05
+	var back_out := _player.visible and _fp_blend < 0.05 \
+		and _camera.get_cull_mask_value(head_bit)
 	_first_person = _fp_default   # leave the game in its shipping default
-	var ok := fp_on and at_eye_level and tumble_forces_third and back_out
-	print("[SELFTEST] first-person: on(hidden+close)=%s at-eye-level=%s tumble-forces-third=%s toggle-off=%s -> %s"
-		% [fp_on, at_eye_level, tumble_forces_third, back_out, ok])
+	var ok := fp_on and at_eye_level and body_kept and ghost_untagged \
+		and tumble_forces_third and back_out
+	print("[SELFTEST] first-person: on(head-culled)=%s at-eye-level=%s body-kept=%s(%d body/%d head) "
+		% [fp_on, at_eye_level, body_kept, body_parts, head_parts]
+		+ "ghost-keeps-face=%s tumble-forces-third=%s toggle-off=%s -> %s"
+		% [ghost_untagged, tumble_forces_third, back_out, ok])
 	return ok
 
 ## The keys chain: dog -> inventory -> the back door needs them TURNED.
@@ -1333,6 +1367,12 @@ func _build_camera() -> void:
 	_cam_pitch.add_child(_spring)
 	_camera = Camera3D.new()
 	_camera.fov = fov_base
+	# Godot's default near plane is 0.05m, but in first person the top of the
+	# chest puff sits about 5mm under the eye — at the default you'd look down
+	# straight THROUGH your own body. `far` drops with it to keep depth precision
+	# sane at such a small near (the whole house is ~25m end to end).
+	_camera.near = 0.012
+	_camera.far = 200.0
 	_camera.current = true
 	_spring.add_child(_camera)
 	_spring.add_excluded_object(_player.get_rid())
@@ -2737,9 +2777,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		# would hide the exact thing the scale exists to show. First person opens
 		# it right up; third keeps the tighter limit so the spring arm doesn't
 		# swing down through the floor.
+		# DOWN opens up too, or you cannot physically look at the body first
+		# person now draws for you — -55 only reaches the floor ahead of you.
 		var pitch_max := deg_to_rad(lerpf(25.0, 72.0, _fp_blend))
+		var pitch_min := deg_to_rad(lerpf(-55.0, -85.0, _fp_blend))
 		_pitch = clampf(_pitch - event.relative.y * mouse_sensitivity,
-			deg_to_rad(-55.0), pitch_max)
+			pitch_min, pitch_max)
 	elif event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			# KEY_ESCAPE is owned by AppRoot._input (the pause menu) and consumed
@@ -3303,7 +3346,11 @@ func _update_camera(delta: float) -> void:
 	_fp_blend = move_toward(_fp_blend, 1.0 if fp_active else 0.0, delta * 6.0)
 	# Your own bag disappears only when the camera is fully inside it — mid-blend
 	# you'd see your own fabric whip past, which reads as a glitch.
-	_player.visible = _fp_blend < 0.85
+	# The bag now stays VISIBLE in first person — looking down and seeing the
+	# quilted body you're zipped into is the whole point. Only the geometry at or
+	# above the eye is culled, via its own render layer, so your teammates (who
+	# are on the default layer) keep their faces.
+	_camera.set_cull_mask_value(SleepingBagPlayer.OWN_HEAD_LAYER, _fp_blend < 0.5)
 	# These blend targets are BAG-relative (eyes inside the bag, camera pulled
 	# into the fabric), so they scale with BAG_HEIGHT or they fight the body size:
 	# eye height sits high in the bag, the cocoon/first-person distances are just
@@ -3322,9 +3369,11 @@ func _update_camera(delta: float) -> void:
 	var h := lerpf(lerpf(cam_height, eye_h, _fp_blend), cocoon_h, _cocoon_cam)
 	var follow: Vector3 = watch.global_position if watch != null else _player.global_position
 	var target := follow + Vector3.UP * h
-	# In first person the pivot must track the body hard, or your eyes drag
-	# behind your own movement.
-	var track := lerpf(12.0, 30.0, _fp_blend)
+	# In first person the pivot must track the body hard, or your eyes drag behind
+	# your own movement — and now that your torso is on screen, that lag reads as
+	# your own body sliding around under you. Still smoothed, not snapped: the bag
+	# is a jittery rigidbody and the smoothing is what keeps it comfortable.
+	var track := lerpf(12.0, 45.0, _fp_blend)
 	_cam_pivot.global_position = _cam_pivot.global_position.lerp(
 		target, clampf(track * delta, 0.0, 1.0))
 	_cam_pivot.rotation.y = _yaw + _lookback * PI

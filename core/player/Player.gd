@@ -82,6 +82,14 @@ var _spawn_grace: float = 0.0  ## suppress landing noise right after (re)spawn
 ## lives in TUMBLED, and can never hop (the hop gate only runs in NORMAL). This
 ## factor keeps the angular FEEL identical at any BagVisual.BAG_HEIGHT.
 ## Linear forces need no such treatment — a·= F/m, and mass is unchanged.
+## Render layer 2 (bit value 2) carries the LOCAL bag's at-or-above-eye geometry —
+## head puffs, eyes, lids, zipper pull. The owning camera drops this bit in first
+## person; everything else (including every remote ghost) stays on layer 1 and is
+## drawn normally. Cull masks don't affect shadow casting, so the full silhouette
+## still throws a shadow on the wall even while its head isn't drawn for you.
+const OWN_HEAD_LAYER := 2
+const OWN_HEAD_LAYER_BIT := 1 << (OWN_HEAD_LAYER - 1)
+
 const TORQUE_TUNED_AT_HEIGHT := 0.9
 var _torque_scale: float = 1.0
 
@@ -172,6 +180,15 @@ func set_skin(skin: int) -> void:
 	_eyes = built[1]
 	# Bag base at the capsule's bottom — half the height, whatever the height is.
 	_visual.position = Vector3(0, -BagVisual.BAG_HEIGHT * 0.5, 0)
+	# Move THIS bag's head geometry onto its own render layer so the owner's
+	# first-person camera can cull it and leave the body visible. Only the local
+	# player does this — remote ghosts are built by the same function but keep
+	# every part on the default layer, which is what stops a first-person view
+	# from also blanking your teammates' faces.
+	for child in _visual.get_children():
+		var vis := child as VisualInstance3D
+		if vis != null and vis.get_meta(BagVisual.HEAD_PART_META, false):
+			vis.layers = OWN_HEAD_LAYER_BIT
 	add_child(_visual)
 
 ## Eye mood from local state. ALERT (monster near) is layered on by Main, which

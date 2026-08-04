@@ -22,6 +22,12 @@ const BAG_HEIGHT := 0.45
 ## eyes. Keep it and the eye meshes below in sync — they are the same number.
 const EYE_FRACTION := 0.74
 
+## Meshes at or above eye level are tagged with this. The LOCAL player moves them
+## to their own render layer so a first-person camera can cull them and leave the
+## body — you look down and see the bag you're zipped into. Remote ghosts never
+## act on the tag, which is what keeps teammates' googly eyes on screen.
+const HEAD_PART_META := "head_part"
+
 const SKINS: Array = [
 	{"name": "CLASSIC RED", "base": Color(0.82, 0.12, 0.12)},
 	{"name": "NIGHT SKY", "base": Color(0.16, 0.28, 0.78)},
@@ -64,6 +70,12 @@ static func build_with_eyes(height: float = BAG_HEIGHT, skin: int = 0) -> Array:
 		seg.mesh = sphere
 		seg.position = Vector3(0, seg_heights[i] * height, 0)
 		seg.set_surface_override_material(0, body_mat)
+		# Segments at or above EYE_FRACTION are "head": the first-person camera
+		# sits INSIDE segment 3, so leaving it drawn fills the screen with the
+		# inside of your own bag. Everything below stays — that's the body you
+		# look down and see.
+		if seg_heights[i] >= EYE_FRACTION - 0.01:
+			seg.set_meta(HEAD_PART_META, true)
 		root.add_child(seg)
 
 	# Zipper: a thin bright strip up the front + a little pull tab at the top.
@@ -84,6 +96,7 @@ static func build_with_eyes(height: float = BAG_HEIGHT, skin: int = 0) -> Array:
 	pull.mesh = pull_box
 	pull.position = Vector3(0, 0.78 * height, -0.24 * height)
 	pull.set_surface_override_material(0, zip_mat)
+	pull.set_meta(HEAD_PART_META, true)  # above the eye and in front — would hang in view
 	root.add_child(pull)
 
 	# Googly eyes: the whole personality. Big whites, black pupils, unshaded
@@ -110,6 +123,7 @@ static func build_with_eyes(height: float = BAG_HEIGHT, skin: int = 0) -> Array:
 		eye.mesh = eye_mesh
 		eye.position = Vector3(side * 0.085 * height, EYE_FRACTION * height, -0.175 * height)
 		eye.set_surface_override_material(0, white_mat)
+		eye.set_meta(HEAD_PART_META, true)   # you can't see your own eyeballs
 		root.add_child(eye)
 
 		var pupil := MeshInstance3D.new()
@@ -119,6 +133,7 @@ static func build_with_eyes(height: float = BAG_HEIGHT, skin: int = 0) -> Array:
 		pupil.mesh = pupil_mesh
 		pupil.position = Vector3(side * 0.085 * height, 0.745 * height, -0.255 * height)
 		pupil.set_surface_override_material(0, pupil_mat)
+		pupil.set_meta(HEAD_PART_META, true)
 		root.add_child(pupil)
 		pupils.append(pupil)
 
@@ -130,6 +145,7 @@ static func build_with_eyes(height: float = BAG_HEIGHT, skin: int = 0) -> Array:
 		# Rest position: raised above the eye (open). BagEyes lowers it to close.
 		lid.position = Vector3(side * 0.085 * height, 0.74 * height + 0.19 * height, -0.185 * height)
 		lid.set_surface_override_material(0, lid_mat)
+		lid.set_meta(HEAD_PART_META, true)
 		root.add_child(lid)
 		lids.append(lid)
 

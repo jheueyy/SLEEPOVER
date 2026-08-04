@@ -590,8 +590,38 @@ person is the *opt-out*, for when you want to watch your own googly-eyed bag be 
 
 Still **forced back to third the moment you tumble** (a spinning first-person face-plant is
 a nausea machine, and the pratfall is the comedy beat you're meant to see) or get
-cocooned/spectate. Your own bag mesh hides only when the camera is fully inside it
-(`_fp_blend >= 0.85`), so you never see your own fabric whip past mid-blend.
+cocooned/spectate.
+
+### You have a body, and you can look down at it
+A first person with nothing under the camera reads as cheap, so the bag stays **drawn** —
+look down and you see the quilted puffs you're zipped into and your own zipper. That fits the
+premise better than arms ever would: you are not a person with their hands free, you are a
+kid stuck in a bag.
+
+The camera sits at `0.74 × BAG_HEIGHT`, which is **inside** the 4th quilt segment, so simply
+un-hiding the bag fills the screen with its own lining. Instead, geometry at or above the eye
+(segments 3–4, eyes, pupils, lids, zipper pull — 9 parts) is tagged
+`BagVisual.HEAD_PART_META` and moved by the **local player only** onto render layer
+`SleepingBagPlayer.OWN_HEAD_LAYER`, which the owning camera drops from its `cull_mask` in
+first person. The 4 body parts below the eye stay.
+
+- **Why only the local player re-layers.** Ghost bags come from the same builder. Tag them
+  too and going first person blanks your *teammates'* googly eyes — and watching your friend's
+  eyes go WIDE is a core feature. This is the failure most likely to ship unnoticed, because
+  solo play looks perfect; the selftest asserts a spawned ghost is untagged, and that
+  assertion was verified to fail against a build that tagged ghosts.
+- **Layers, not `visible`.** Cull masks don't affect shadow casting, so your whole silhouette
+  — head included — still throws a proper shadow on the wall.
+- **Near plane matters here.** The chest puff tops out ~5 mm under the eye, so at Godot's
+  default `near` of 0.05 you'd look straight *through* your own body. It's 0.012, with `far`
+  cut to 200 to keep depth precision sane (the house is ~25 m end to end).
+- **Pitch opens both ways** — up 25° → 72°, down −55° → −85°, lerped on `_fp_blend`. Without
+  the downward half you physically cannot look at the body first person now draws for you.
+
+The view deliberately **does not tilt with the bag's sway**: you watch your body lean and
+wobble beneath a level camera. Welding the view to a body designed to be permanently
+almost-falling-over is the fastest route to motion sickness, and it's the same call that
+removed camera shake.
 
 **Behind the eyes, not above the head.** `BagVisual.EYE_FRACTION` (0.74) measures the eyes
 from the bag's **feet**, but the camera pivot rides the body **centre** — so the offset is
@@ -600,10 +630,9 @@ bag above where you're actually looking from, which is why first person never re
 person before. The `first-person` selftest asserts the pivot sits at eye level, and that
 assertion was verified to fail against the old value.
 
-**Pitch opens up in first person** — the up-limit lerps 25° → 72° with `_fp_blend`. She is
-five times your height and often directly overhead; third-person's tighter ceiling (which
-stops the spring arm swinging through the floor) would hide the exact thing the scale exists
-to show.
+The upward pitch limit matters for a second reason beyond seeing your body: she is five times
+your height and often directly overhead, so third-person's tighter ceiling (which stops the
+spring arm swinging through the floor) would hide the exact thing the scale exists to show.
 
 ## Hop economy — perches & clutter (`HouseSuburban`, `Fragment`)
 Stairs made hops a *choice* again; these make the choice interesting. **The rule: hops gate
