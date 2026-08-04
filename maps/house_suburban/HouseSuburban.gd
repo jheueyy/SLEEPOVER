@@ -445,27 +445,32 @@ static func dist_to_nearest_stair(world_pos: Vector3) -> float:
 	return best
 
 # Room labels: gray-box wayfinding + playtest comms ("it's in the DINING ROOM")
+## Signage is player-facing UI that happens to live in the world, so it's sized
+## for the VIEWER, not the house: every label sits 1.3 above its own floor, which
+## a 0.45m bag with eyes at 0.33 can read by tilting up. They used to hang 2.2 up
+## in half-metre-tall type — fine over a 0.9m bag, but "LIVING ROOM" spanning the
+## whole screen once the bags halved.
 const ROOMS: Array = [
-	{"name": "LIVING ROOM", "at": Vector3(-4.5, 2.2, 2.5)},
-	{"name": "KITCHEN", "at": Vector3(-5.5, 2.2, -3.5)},
-	{"name": "DINING", "at": Vector3(-0.5, 2.2, -3.5)},
-	{"name": "PANTRY", "at": Vector3(3.5, 2.2, -3.5)},
-	{"name": "GARAGE", "at": Vector3(6.5, 2.2, 0.0)},
-	{"name": "HALL", "at": Vector3(0.5, 2.2, 5.3)},
-	{"name": "LAUNDRY", "at": Vector3(3.5, 2.2, 0.75)},
-	{"name": "BATH", "at": Vector3(3.5, 2.2, 4.25)},
-	{"name": "MASTER BED", "at": Vector3(-4.5, 5.2, 3.5)},
-	{"name": "LANDING", "at": Vector3(0.5, 5.2, 5.3)},
-	{"name": "CLOSET (CHUTE!)", "at": Vector3(3.5, 5.2, 1.25)},
-	{"name": "OFFICE", "at": Vector3(3.5, 5.2, 4.0)},
-	{"name": "KID ROOM 1", "at": Vector3(-5.5, 5.2, -3.5)},
-	{"name": "KID ROOM 2", "at": Vector3(-0.5, 5.2, -3.5)},
-	{"name": "UP BATH", "at": Vector3(3.5, 5.2, -3.5)},
-	{"name": "OPEN REC ROOM", "at": Vector3(-1.0, -1.8, 2.0)},
-	{"name": "STORAGE", "at": Vector3(-5.5, -1.8, -2.0)},
-	{"name": "UTILITY (BREAKER)", "at": Vector3(1.0, -1.8, -4.5)},
-	{"name": "WALKOUT", "at": Vector3(-6.5, -1.8, 4.5)},
-	{"name": "ATTIC", "at": Vector3(-3.0, 7.4, -3.5)},
+	{"name": "LIVING ROOM", "at": Vector3(-4.5, 1.3, 2.5)},
+	{"name": "KITCHEN", "at": Vector3(-5.5, 1.3, -3.5)},
+	{"name": "DINING", "at": Vector3(-0.5, 1.3, -3.5)},
+	{"name": "PANTRY", "at": Vector3(3.5, 1.3, -3.5)},
+	{"name": "GARAGE", "at": Vector3(6.5, 1.3, 0.0)},
+	{"name": "HALL", "at": Vector3(0.5, 1.3, 5.3)},
+	{"name": "LAUNDRY", "at": Vector3(3.5, 1.3, 0.75)},
+	{"name": "BATH", "at": Vector3(3.5, 1.3, 4.25)},
+	{"name": "MASTER BED", "at": Vector3(-4.5, 4.3, 3.5)},
+	{"name": "LANDING", "at": Vector3(0.5, 4.3, 5.3)},
+	{"name": "CLOSET (CHUTE!)", "at": Vector3(3.5, 4.3, 1.25)},
+	{"name": "OFFICE", "at": Vector3(3.5, 4.3, 4.0)},
+	{"name": "KID ROOM 1", "at": Vector3(-5.5, 4.3, -3.5)},
+	{"name": "KID ROOM 2", "at": Vector3(-0.5, 4.3, -3.5)},
+	{"name": "UP BATH", "at": Vector3(3.5, 4.3, -3.5)},
+	{"name": "OPEN REC ROOM", "at": Vector3(-1.0, -1.7, 2.0)},
+	{"name": "STORAGE", "at": Vector3(-5.5, -1.7, -2.0)},
+	{"name": "UTILITY (BREAKER)", "at": Vector3(1.0, -1.7, -4.5)},
+	{"name": "WALKOUT", "at": Vector3(-6.5, -1.7, 4.5)},
+	{"name": "ATTIC", "at": Vector3(-3.0, 7.3, -3.5)},
 ]
 
 const COL_FLOOR := Color(0.30, 0.30, 0.34)
@@ -575,10 +580,10 @@ static func build(parent: Node3D) -> void:
 		# child of the blocker, so it hides with the door when the exit unlocks.
 		var door_label := Label3D.new()
 		door_label.text = door_def[4]
-		door_label.font_size = 40
+		door_label.font_size = 20
 		door_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		door_label.modulate = Color(0.95, 0.85, 0.6, 0.85)
-		door_label.position = Vector3(0, 1.3, 0)
+		door_label.position = Vector3(0, 0.7, 0)
 		door.add_child(door_label)
 		parent.add_child(door)
 
@@ -603,10 +608,10 @@ static func build(parent: Node3D) -> void:
 		area.add_child(a_mesh)
 		var a_label := Label3D.new()
 		a_label.text = "HIDE"
-		a_label.font_size = 40
+		a_label.font_size = 20
 		a_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		a_label.modulate = Color(0.5, 1.0, 0.6, 0.6)
-		a_label.position = Vector3(0, 1.0, 0)
+		a_label.position = Vector3(0, 0.55, 0)
 		area.add_child(a_label)
 		parent.add_child(area)
 
@@ -622,7 +627,7 @@ static func build(parent: Node3D) -> void:
 		var at: Vector3 = room["at"]
 		var label := Label3D.new()
 		label.text = room["name"]
-		label.font_size = 72
+		label.font_size = 34   # ~0.17m of world text; 72 was taller than the bag
 		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		label.modulate = Color(1, 1, 1, 0.5)
 		label.position = Vector3(at.x * S, at.y, at.z * S)
@@ -769,10 +774,10 @@ static func _build_stairs(parent: Node3D, stair: Dictionary) -> void:
 		var mouth := Vector3(start.x, base, start.y)
 		var sign := Label3D.new()
 		sign.text = ("▼ " if rise < 0.0 else "▲ ") + to_name
-		sign.font_size = 56
+		sign.font_size = 28
 		sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		sign.modulate = Color(1.0, 0.85, 0.4, 0.9)
-		sign.position = mouth + Vector3(0, 1.7, 0)
+		sign.position = mouth + Vector3(0, 0.9, 0)
 		parent.add_child(sign)
 		var lamp := OmniLight3D.new()
 		lamp.position = mouth + Vector3(0, 1.3, 0)

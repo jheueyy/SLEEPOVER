@@ -22,6 +22,12 @@ const BAG_HEIGHT := 0.45
 ## eyes. Keep it and the eye meshes below in sync — they are the same number.
 const EYE_FRACTION := 0.74
 
+## How far FORWARD of the bag's centre axis the eyes sit, as a fraction of height.
+## The first-person camera needs this as much as it needs the height: placed on
+## the axis it sits buried inside the chest puff, which then wraps around it and
+## fills the lower half of the screen with your own lining.
+const EYE_FORWARD := 0.175
+
 ## Meshes at or above eye level are tagged with this. The LOCAL player moves them
 ## to their own render layer so a first-person camera can cull them and leave the
 ## body — you look down and see the bag you're zipped into. Remote ghosts never
@@ -121,7 +127,7 @@ static func build_with_eyes(height: float = BAG_HEIGHT, skin: int = 0) -> Array:
 		eye_mesh.radius = 0.095 * height
 		eye_mesh.height = 0.19 * height
 		eye.mesh = eye_mesh
-		eye.position = Vector3(side * 0.085 * height, EYE_FRACTION * height, -0.175 * height)
+		eye.position = Vector3(side * 0.085 * height, EYE_FRACTION * height, -EYE_FORWARD * height)
 		eye.set_surface_override_material(0, white_mat)
 		eye.set_meta(HEAD_PART_META, true)   # you can't see your own eyeballs
 		root.add_child(eye)

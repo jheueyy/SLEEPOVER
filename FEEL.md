@@ -533,6 +533,11 @@ anchors. Absolute movement speeds are unchanged too, which is what keeps the spe
    doubling the stamina economy. `_selftest_hop_economy` now asserts a mid-flight hop is
    refused, and that assertion was verified to fail against the unscaled ray.
 
+**World signage scales with the VIEWER, not the house.** Room names, stair signs, door and
+HIDE labels are player-facing UI that happens to live in 3D, so they halved with the bag and
+now sit ~1.3 m above their own floor. At the old 72 pt they were half a metre of world text
+hanging 1.9 m over an eye that's 0.33 m off the ground — "LIVING ROOM" spanned the screen.
+
 Reach values (`Objective/Fragment/Item.NEAR` = 1.2, `rescue_range` = 1.1) and camera
 framing scale *with* the bag but are kept as their own numbers — those are FEEL, and want
 tuning independently of body size. Reach is deliberately a little more generous than strict
@@ -612,6 +617,16 @@ first person. The 4 body parts below the eye stay.
   assertion was verified to fail against a build that tagged ghosts.
 - **Layers, not `visible`.** Cull masks don't affect shadow casting, so your whole silhouette
   — head included — still throws a proper shadow on the wall.
+- **The camera has to sit at the eyes, which are FORWARD of the bag's axis.** This is the
+  one that actually broke it in play: on the centre axis the camera is buried ~8 cm inside
+  the chest puff, whose 0.126 m radius then wraps around it and fills the bottom half of the
+  screen with your own lining. Pushed out by `BAG_HEIGHT * EYE_FORWARD`, the chest drops to
+  ~62° below the horizon — outside a 70° FOV until you look down. The offset goes on
+  `_cam_pivot` (yaw only), **never** on the spring arm: that's a child of `_cam_pitch`, so an
+  offset there tilts with the pitch and looking *down* drives the camera back into the chest.
+  It's also folded into the lerp *target*, not added after, or it compounds against the
+  smoothing every frame. It can't clip walls — 0.079 m is well inside the capsule's 0.15 m
+  radius, so the camera never leaves a volume the collider already keeps clear.
 - **Near plane matters here.** The chest puff tops out ~5 mm under the eye, so at Godot's
   default `near` of 0.05 you'd look straight *through* your own body. It's 0.012, with `far`
   cut to 200 to keep depth precision sane (the house is ~25 m end to end).

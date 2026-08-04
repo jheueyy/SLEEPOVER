@@ -894,9 +894,14 @@ func _selftest_first_person() -> bool:
 	# while BagVisual measures eyes from the FEET, so a missing half-height offset
 	# silently floats the view a third of a bag above where you're looking from —
 	# which is exactly why this never read as first person before.
-	var want_eye_y: float = _player.global_position.y \
-		+ BagVisual.BAG_HEIGHT * (BagVisual.EYE_FRACTION - 0.5)
-	var at_eye_level: bool = absf(_cam_pivot.global_position.y - want_eye_y) < 0.05
+	# Height AND forward. Height alone passed happily while the camera sat on the
+	# bag's centre axis, buried in the chest puff — which then wrapped around it
+	# and filled the bottom half of the screen. The eyes are FORWARD of the axis;
+	# miss that and first person shows you your own lining.
+	var want_eye := _player.global_position \
+		+ Vector3.UP * (BagVisual.BAG_HEIGHT * (BagVisual.EYE_FRACTION - 0.5)) \
+		- _cam_pivot.global_transform.basis.z * (BagVisual.BAG_HEIGHT * BagVisual.EYE_FORWARD)
+	var at_eye_level: bool = _cam_pivot.global_position.distance_to(want_eye) < 0.03
 	_player.state = SleepingBagPlayer.State.TUMBLED
 	for _i in 60:
 		_update_camera(1.0 / 30.0)
@@ -908,8 +913,12 @@ func _selftest_first_person() -> bool:
 	_first_person = false
 	for _i in 60:
 		_update_camera(1.0 / 30.0)
+	# Third person must have NO eye offset — it's a first-person-only push, and a
+	# chase cam nudged forward would sit inside the bag it's meant to be behind.
+	var third_no_offset: bool = _cam_pivot.global_position.distance_to(
+		_player.global_position + Vector3.UP * cam_height) < 0.03
 	var back_out := _player.visible and _fp_blend < 0.05 \
-		and _camera.get_cull_mask_value(head_bit)
+		and _camera.get_cull_mask_value(head_bit) and third_no_offset
 	_first_person = _fp_default   # leave the game in its shipping default
 	var ok := fp_on and at_eye_level and body_kept and ghost_untagged \
 		and tumble_forces_third and back_out
@@ -1406,8 +1415,11 @@ func _build_hud() -> void:
 	layer.add_child(_state_label)
 
 	# Who's talking (driven by VoiceManager.speaking_changed).
+	# One label per row, 24px apart: help 12 / state 40 / mic 72 / net 96 / voice 120.
+	# The mic and net labels used to BOTH sit at y=72 and drew straight through
+	# each other — unreadable, and it looked like a font bug rather than a clash.
 	_voice_label = Label.new()
-	_voice_label.position = Vector2(16, 96)
+	_voice_label.position = Vector2(16, 120)
 	_voice_label.add_theme_color_override("font_color", Color(0.6, 0.95, 0.7))
 	layer.add_child(_voice_label)
 	VoiceManager.speaking_changed.connect(func(_pid: int, _talking: bool) -> void:
@@ -1418,7 +1430,7 @@ func _build_hud() -> void:
 		_voice_label.text = ("🗣 " + ", ".join(names)) if not names.is_empty() else "")
 
 	_net_label = Label.new()
-	_net_label.position = Vector2(16, 72)
+	_net_label.position = Vector2(16, 96)
 	_net_label.add_theme_color_override("font_color", Color(0.6, 0.8, 1.0))
 	layer.add_child(_net_label)
 
@@ -3368,7 +3380,22 @@ func _update_camera(delta: float) -> void:
 	_spring.spring_length = lerpf(lerpf(cam_distance, fp_dist, _fp_blend), cocoon_dist, _cocoon_cam)
 	var h := lerpf(lerpf(cam_height, eye_h, _fp_blend), cocoon_h, _cocoon_cam)
 	var follow: Vector3 = watch.global_position if watch != null else _player.global_position
-	var target := follow + Vector3.UP * h
+	# Yaw FIRST — the eye offset below is taken from this basis, so the pivot has
+	# to be facing the right way before the target is computed.
+	_cam_pivot.rotation.y = _yaw + _lookback * PI
+	# The eyes sit FORWARD of the bag's centre axis. On the axis the camera is
+	# buried ~8cm inside the chest puff, which then wraps around it and fills the
+	# bottom half of the screen with your own lining. Pushing out to the eyes drops
+	# the chest to ~62 deg below the horizon — out of a 70 deg FOV until you look
+	# down, which is exactly when you should see it.
+	#
+	# This goes on the pivot (yaw only), NOT on _spring: the spring arm is a child
+	# of _cam_pitch, so an offset there would tilt with the pitch and looking DOWN
+	# would drive the camera straight back into the chest. It's also folded into
+	# the lerp TARGET rather than added afterwards, or it would compound against
+	# the smoothing every frame.
+	var eye_fwd := bh * BagVisual.EYE_FORWARD * _fp_blend
+	var target := follow + Vector3.UP * h - _cam_pivot.global_transform.basis.z * eye_fwd
 	# In first person the pivot must track the body hard, or your eyes drag behind
 	# your own movement — and now that your torso is on screen, that lag reads as
 	# your own body sliding around under you. Still smoothed, not snapped: the bag
@@ -3376,7 +3403,6 @@ func _update_camera(delta: float) -> void:
 	var track := lerpf(12.0, 45.0, _fp_blend)
 	_cam_pivot.global_position = _cam_pivot.global_position.lerp(
 		target, clampf(track * delta, 0.0, 1.0))
-	_cam_pivot.rotation.y = _yaw + _lookback * PI
 	_cam_pitch.rotation.x = _pitch
 	var dist := _player.global_position.distance_to(_monster.global_position)
 	var panic := clampf(1.0 - dist / chase_range, 0.0, 1.0)
