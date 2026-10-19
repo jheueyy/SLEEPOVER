@@ -17,8 +17,8 @@ class_name SleepingBagPlayer
 
 # ── Shuffle ────────────────────────────────────────────────────────────────
 @export_group("Shuffle")
-@export var shuffle_force: float = 45.0      ## push while a WASD key is held (N)
-@export var shuffle_speed: float = 2.0       ## m/s cap — slowed walk, but not boring
+@export var shuffle_force: float = 32.0      ## softer acceleration while still overcoming floor friction
+@export var shuffle_speed: float = 1.45      ## provisional slower shuffle; review in a friend playtest
 @export var brake_damping: float = 8.0       ## how hard the bag stops with no input (holds on stair ramps)
 
 # ── Stairs ─────────────────────────────────────────────────────────────────
@@ -29,6 +29,7 @@ class_name SleepingBagPlayer
 # always shuffle up, and hopping them is a choice you pay for.
 @export_group("Stairs")
 @export var stair_speed: float = 1.25        ## m/s cap while on a slope — slower than flat on purpose
+@export var stair_force: float = 45.0        ## keep reliable ramp traction independent of flat acceleration
 @export var stair_min_slope_deg: float = 12.0 ## steeper ground than this counts as stairs
 @export var stair_grip: float = 1.15         ## gravity-cancel multiplier — >1 so you hold, never creep back
 
@@ -54,6 +55,7 @@ class_name SleepingBagPlayer
 @export var tumble_loudness: float = 0.8     ## crash ping when you go down
 
 enum State { NORMAL, TUMBLED, COCOONED }
+signal landed
 
 const DIR_KEYS := {
 	KEY_W: Vector3(0, 0, -1),
@@ -74,6 +76,8 @@ var recover_progress: float = 0.0
 var _hop_queued: bool = false
 var _was_grounded: bool = true
 var _spawn_grace: float = 0.0  ## suppress landing noise right after (re)spawn
+var _shuffle_audio_distance: float = 0.0
+var _shuffle_audio_cooldown: float = 0.0
 
 ## Every torque value below was tuned against a 0.9m bag. Torque produces angular
 ## acceleration = torque / moment of inertia, and inertia goes as mass·r² — so it
@@ -119,7 +123,8 @@ func _ready() -> void:
 	shape.shape = capsule  # upright — a person standing in a bag
 	add_child(shape)
 
-	set_skin(BagVisual.skin_for_peer(multiplayer.get_unique_id()))
+	var peer_id := multiplayer.get_unique_id() if multiplayer.has_multiplayer_peer() else 1
+	set_skin(BagVisual.skin_for_peer(peer_id))
 
 	# Five ground rays (center + 4 offsets): a single center ray misses when
 	# the bag bridges two stair treads, which blocked hopping on staircases.
@@ -210,6 +215,8 @@ func drive_eyes(mood: int, delta: float) -> void:
 		_eyes.apply(mood, delta)
 
 func respawn() -> void:
+	_shuffle_audio_distance = 0.0
+	_shuffle_audio_cooldown = 0.2
 	freeze = false
 	state = State.NORMAL
 	stamina = stamina_max
@@ -229,6 +236,8 @@ func respawn() -> void:
 # ── Input ──────────────────────────────────────────────────────────────────
 
 func _unhandled_input(event: InputEvent) -> void:
+	if not controls_enabled:
+		return
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
 
@@ -257,6 +266,10 @@ func _physics_process(delta: float) -> void:
 				steepest = a
 				_ground_normal = n
 	_on_slope = grounded and steepest > deg_to_rad(stair_min_slope_deg)
+	_update_shuffle_audio(delta)
+	if _visual != null:
+		BagVisual.animate_shuffle(_visual, _horizontal_speed() * delta,
+			grounded and state == State.NORMAL and absf(linear_velocity.y) < 0.9, delta)
 
 	# Turn the googly eyes toward the movement heading (local yaw compensates
 	# for whatever the physics body's own yaw is doing).
@@ -283,9 +296,28 @@ func _physics_process(delta: float) -> void:
 	if grounded and not _was_grounded and state != State.COCOONED:
 		if _spawn_grace <= 0.0:
 			NoiseBus.emit_noise(global_position, land_loudness)
+			SoundKit.play_at(self, global_position, "thump", 16.0, -9.0, SoundKit.variation_pitch())
+			landed.emit()
+			_shuffle_audio_cooldown = 0.2
 		if _horizontal_speed() > land_tumble_speed and state == State.NORMAL:
 			_tumble()
 	_was_grounded = grounded
+
+func _update_shuffle_audio(delta: float) -> void:
+	_shuffle_audio_cooldown = maxf(_shuffle_audio_cooldown - delta, 0.0)
+	if not grounded or state != State.NORMAL or not controls_enabled or absf(linear_velocity.y) > 0.9:
+		_shuffle_audio_distance = 0.0
+		return
+	var speed := _horizontal_speed()
+	if speed < 0.15:
+		_shuffle_audio_distance = 0.0
+		return
+	_shuffle_audio_distance += speed * delta
+	if _shuffle_audio_distance >= SoundKit.SHUFFLE_DISTANCE and _shuffle_audio_cooldown <= 0.0:
+		_shuffle_audio_distance = fmod(_shuffle_audio_distance, SoundKit.SHUFFLE_DISTANCE)
+		_shuffle_audio_cooldown = SoundKit.SHUFFLE_COOLDOWN
+		# Audible fabric/footfall feedback is NOT a gameplay noise ping.
+		SoundKit.play_at(self, global_position, "shuffle", 5.0, -18.0, SoundKit.variation_pitch() * 0.85)
 
 func _process_normal(delta: float) -> void:
 	# Weak upright spring: the bag is ALWAYS almost falling over.
@@ -318,9 +350,10 @@ func _process_normal(delta: float) -> void:
 			# than flat ground so stairs read as a deliberate slow zone.
 			var along := (dir - _ground_normal * dir.dot(_ground_normal))
 			if along.length() > 0.01 and _horizontal_speed() < stair_speed:
-				apply_central_force(along.normalized() * shuffle_force)
+				apply_central_force(along.normalized() * stair_force)
 		elif _horizontal_speed() < shuffle_speed:
-			apply_central_force(dir * shuffle_force)
+			var remaining_force := (shuffle_speed - _horizontal_speed()) * mass / maxf(delta, 0.001)
+			apply_central_force(dir * minf(shuffle_force, remaining_force))
 	elif grounded:
 		# No input: brake to a stop so the bag doesn't creep down stair ramps.
 		var t := clampf(brake_damping * delta, 0.0, 1.0)
@@ -351,8 +384,16 @@ func _process_recovery(_delta: float) -> void:
 ## Test hook: the harness can't press physical keys, so it drives movement through
 ## this instead. Zero = read the real keyboard.
 var test_move: Vector3 = Vector3.ZERO
+var controls_enabled: bool = true
+
+func set_controls_enabled(enabled: bool) -> void:
+	controls_enabled = enabled
+	if not enabled:
+		_hop_queued = false
 
 func _input_dir() -> Vector3:
+	if not controls_enabled:
+		return Vector3.ZERO
 	if test_move != Vector3.ZERO:
 		return test_move.normalized()
 	var dir := Vector3.ZERO

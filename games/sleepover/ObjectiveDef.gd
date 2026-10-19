@@ -61,7 +61,7 @@ static func _dog() -> ObjectiveDef:
 	d.kind = Kind.DOG
 	d.clue_spots = [HouseSuburban.scaled(HouseSuburban.DOG_SNACK_SPOT)]
 	d.action_spot = Vector3.ZERO  # the dog moves; resolved at runtime
-	d.action_prompt = "E: GRAB SNACK"
+	d.action_prompt = "E: GIVE JERKY"
 	d.noise_sound = "bark"
 	d.noise_loudness = 0.7
 	return d

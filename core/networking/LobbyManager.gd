@@ -30,6 +30,7 @@ func enter_lobby(my_name: String) -> void:
 	players.clear()
 	started = false
 	_want_ready = false
+	_connected = false
 	if _authority():
 		_connected = true
 		players[_id()] = _make_entry(my_name, _id())
@@ -50,6 +51,7 @@ func leave() -> void:
 	players.clear()
 	started = false
 	_connected = false
+	_want_ready = false
 	roster_changed.emit()
 
 func my_ready() -> bool:
@@ -67,18 +69,22 @@ func set_ready(val: bool) -> void:
 		_want_ready = val  # applied once connected
 
 func can_start() -> bool:
-	if players.size() < MIN_TO_START:
+	if started or players.size() < MIN_TO_START:
 		return false
+	var active := 0
 	for p: Dictionary in players.values():
-		if not p.get("spectator", false) and not p.get("ready", false):
-			return false
-	return true
+		if not p.get("spectator", false):
+			active += 1
+			if not p.get("ready", false):
+				return false
+	return active >= MIN_TO_START
 
 func start_game() -> void:
-	if not _authority() or started:
+	if not _authority() or not can_start():
 		return
 	started = true
-	_start.rpc()
+	if _peer_live():
+		_start.rpc()
 	game_started.emit()
 
 # ── RPCs (host-authoritative) ──────────────────────────────────────────────
@@ -88,12 +94,16 @@ func _register(name: String, skin: int = -1) -> void:
 	if not _authority():
 		return
 	var pid := multiplayer.get_remote_sender_id()
+	if pid <= 1 or players.has(pid) or players.size() >= MAX_PLAYERS:
+		return
 	players[pid] = _make_entry(name, pid)
-	if skin >= 0:
+	if skin >= 0 and skin < BagVisual.SKINS.size():
 		players[pid]["skin"] = skin  # the client's chosen cosmetic
 	if started:
 		players[pid]["spectator"] = true
 	_broadcast()
+	if started:
+		_start.rpc_id(pid)
 
 @rpc("any_peer", "call_remote", "reliable")
 func _set_ready(val: bool) -> void:
@@ -107,6 +117,8 @@ func _sync_roster(r: Dictionary) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _start() -> void:
+	if started:
+		return
 	started = true
 	game_started.emit()
 
@@ -128,7 +140,10 @@ func _broadcast() -> void:
 	roster_changed.emit()
 
 func _make_entry(name: String, pid: int) -> Dictionary:
-	return {"name": name, "ready": false, "skin": BagVisual.skin_for_peer(pid), "spectator": false}
+	var display_name := name.strip_edges().replace("\n", " ").replace("\r", " ").left(32)
+	if display_name.is_empty():
+		display_name = "Player"
+	return {"name": display_name, "ready": false, "skin": BagVisual.skin_for_peer(pid), "spectator": false}
 
 func _peer_live() -> bool:
 	return multiplayer.has_multiplayer_peer() \

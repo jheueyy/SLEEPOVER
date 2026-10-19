@@ -9,7 +9,7 @@ extends Node
 ##
 ## Playback: Main registers an AudioStreamPlayer3D per remote peer, parented to
 ## that peer's ghost bag — proximity attenuation comes from the 3D mixer for free.
-## A cocooned speaker's player is routed to the "InBag" low-pass bus (600 Hz):
+## A cocooned speaker's player is routed to the "VoiceInBag" low-pass bus (600 Hz):
 ## voice through fabric. The local player's own voice is never played back.
 ##
 ## The monster does NOT hear voice. Design law: talking is the co-op glue and must
@@ -19,7 +19,7 @@ signal speaking_changed(pid: int, talking: bool)
 
 const PTT_KEY := KEY_V
 const SPEAK_HOLD := 0.4          ## secs an indicator lingers after the last packet
-const TONE_INTERVAL := 0.1       ## test mode: synthetic packet cadence
+const TONE_INTERVAL := 0.02      ## 960-byte PCM payload leaves room below ENet MTU
 const TONE_HZ := 440.0
 const RAW_RATE := 24000          ## sample rate for raw (non-Steam) test packets
 
@@ -61,6 +61,7 @@ signal mic_mode_changed(open_mic: bool)
 
 func _ready() -> void:
 	_ensure_occluded_bus()
+	SoundKit.apply_mix(Scrapbook.master_volume, Scrapbook.effects_volume, Scrapbook.voice_volume)
 	# Mic prefs persist (Scrapbook autoloads before this one).
 	enabled = Scrapbook.voice_enabled
 	open_mic = Scrapbook.voice_open_mic
@@ -105,16 +106,7 @@ func _process(delta: float) -> void:
 # ── Occlusion: walls and floors muffle voice ───────────────────────────────
 
 func _ensure_occluded_bus() -> void:
-	if AudioServer.get_bus_index(OCCLUDED_BUS) != -1:
-		return
-	var idx := AudioServer.get_bus_count()
-	AudioServer.add_bus(idx)
-	AudioServer.set_bus_name(idx, OCCLUDED_BUS)
-	AudioServer.set_bus_send(idx, "Master")
-	AudioServer.set_bus_volume_db(idx, OCCLUDED_DB)
-	var lp := AudioEffectLowPassFilter.new()
-	lp.cutoff_hz = OCCLUDED_CUTOFF
-	AudioServer.add_bus_effect(idx, lp)
+	SoundKit.ensure_buses()
 
 ## True when world geometry (mask 1 = slabs + walls) sits between the two points.
 ## Same raycast pattern the monster uses for sight (Monster._los_to).
@@ -153,11 +145,11 @@ func _apply_bus(pid: int) -> void:
 	if p == null or not is_instance_valid(p):
 		return
 	if bool(_cocooned.get(pid, false)):
-		p.bus = "InBag"
+		p.bus = SoundKit.VOICE_INBAG_BUS
 	elif bool(_occluded.get(pid, false)):
 		p.bus = OCCLUDED_BUS
 	else:
-		p.bus = "Master"
+		p.bus = SoundKit.VOICE_BUS
 
 # ── Capture / send ─────────────────────────────────────────────────────────
 
@@ -246,6 +238,7 @@ func _handle_voice(pid: int, data: PackedByteArray, raw: bool) -> void:
 func register_player(pid: int, parent: Node3D) -> void:
 	unregister_player(pid)
 	var p := AudioStreamPlayer3D.new()
+	p.bus = SoundKit.VOICE_BUS
 	var gen := AudioStreamGenerator.new()
 	gen.mix_rate = float(_sample_rate if SteamManager.steam_ok else RAW_RATE)
 	gen.buffer_length = 0.2
@@ -283,7 +276,7 @@ func unregister_all() -> void:
 	for pid: int in _players.keys().duplicate():
 		unregister_player(pid)
 
-## Cocooned speaker -> route through the InBag low-pass (voice through fabric).
+## Cocooned speaker -> VoiceInBag low-pass, still controlled by Voice volume.
 ## Resolved against occlusion by _apply_bus, so the two can't fight each other.
 func set_muffled(pid: int, muffled: bool) -> void:
 	_cocooned[pid] = muffled

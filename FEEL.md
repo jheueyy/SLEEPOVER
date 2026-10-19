@@ -22,8 +22,8 @@ engine works.
 ### Shuffle — the safe, agonizing baseline
 | Constant | Default | What it does | If it feels wrong |
 |---|---|---|---|
-| `shuffle_force` | 45.0 | push while a WASD key is held | too sluggish to start? raise |
-| `shuffle_speed` | 2.0 | hard speed cap (m/s) | was 1.3 — playtest verdict: boring + monster too quick |
+| `shuffle_force` | 32.0 | softer push while a WASD key is held | Sept 6: 18 failed floor-friction checks; stairs retain separate 45 N traction |
+| `shuffle_speed` | 1.45 | shuffle propulsion cap (m/s); hops can exceed it | Sept 6: reduced from 2.0; provisional playtest tuning |
 | `brake_damping` | 8.0 | stop rate with no input | holds position on stair ramps; lower = more slide |
 
 ### Hop & Stamina — the panic economy
@@ -725,3 +725,6 @@ closet barely registers. Constants: `land_loudness`/`tumble_loudness` (Player),
 hide-exit ping hardcoded 0.3 in Main.
 > Mic-as-noise was removed (2026-07-08 playtest decision). An archived copy of
 > `MicMonitor.gd` exists outside the project if it's ever revisited.
+
+September 7 visibility pass: rendered both Compatibility and Forward+ at bag-camera height. Original ambient fill/contrast crushed nearby floor and wall shapes to black in both. Ambient energy is now 0.24 with a softer blue-gray fill (0.45,0.50,0.65), and contrast 1.02. Forward+ comparison shows nearby geometry while retaining a dark house. Review other rooms and real monitor brightness before final tuning.
+Household prop pass: pickups now use shared, lit ItemVisual geometry: paired brass keys on a ring, a rimmed food tin with a paw label, and a paper party popper with a continuous pull string. The throw uses the same tin model. These are original geometry studies toward readable household props; weathering, in-house low-light readability and final asset polish remain open. Preview rendered successfully. Inventory assertions passed, but that harness run subsequently exited with code 1 without further logged output, so shutdown remains unresolved.

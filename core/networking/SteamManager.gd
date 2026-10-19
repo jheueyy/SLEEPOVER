@@ -105,7 +105,12 @@ func _on_lobby_created(result: int, this_lobby_id: int) -> void:
 	Steam.setLobbyData(lobby_id, "game", LOBBY_TAG)
 	Steam.setLobbyData(lobby_id, "scode", join_code)
 	var peer := SteamMultiplayerPeer.new()
-	peer.create_host(0)
+	var error := peer.create_host(0)
+	if error != OK:
+		peer.close()
+		leave_lobby()
+		lobby_failed.emit("Couldn't start the connection (%d). Try hosting again." % error)
+		return
 	peer.server_relay = true
 	multiplayer.multiplayer_peer = peer
 	lobby_ready.emit(lobby_id, true)
@@ -122,7 +127,12 @@ func _on_lobby_joined(this_lobby_id: int, _perms: int, _locked: bool, response: 
 	if owner_id == Steam.getSteamID():
 		return
 	var peer := SteamMultiplayerPeer.new()
-	peer.create_client(owner_id, 0)
+	var error := peer.create_client(owner_id, 0)
+	if error != OK:
+		peer.close()
+		leave_lobby()
+		lobby_failed.emit("Couldn't connect to the host (%d). Try joining again." % error)
+		return
 	peer.server_relay = true
 	multiplayer.multiplayer_peer = peer
 	lobby_ready.emit(lobby_id, false)

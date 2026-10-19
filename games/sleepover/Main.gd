@@ -9,6 +9,10 @@ extends Node3D
 
 enum Phase { LOBBY, LIGHTS_OUT, ROUND, RESULTS }
 
+signal leave_requested
+var _menu_open: bool = false
+var _replay_button: Button
+
 @export_group("Round")
 @export var lights_out_duration: float = 10.0
 @export var round_duration: float = 600.0   ## 10 minute night
@@ -62,7 +66,6 @@ var _fp_default: bool = true     ## what C returns you to (and what selftests re
 var _fp_blend: float = 0.0       ## 0 = chase cam, 1 = eyes inside the bag
 var _porch_light: OmniLight3D  ## flickers during the 10s intro, then dies
 var _porch_dying: bool = false
-var _aim: MeshInstance3D
 
 # HUD
 var _state_label: Label
@@ -119,6 +122,10 @@ const EXIT_OBJECTIVE := {
 var _blurred_pid: int = 0                 ## glasses: whose screen is blurred (0 = nobody)
 var _rescue_target: Node3D = null
 var _rescue_t: float = 0.0
+var _rescue_pulse_cd: float = 0.0
+var _rescue_requested: bool = false
+var _host_rescues: Dictionary = {}
+var _relaying_remote_noise: bool = false
 var _rescue_zipped: bool = false
 var _debug_visible: bool = false
 var _monster_fx_state: int = -1
@@ -146,6 +153,12 @@ var _tape_ui: AudioStreamPlayer
 # authoritative like fragments — first claim wins.
 var _items: Array[Item] = []
 var _inv: Array[int] = [-1, -1]          ## Item.Kind per slot, -1 = empty
+var _remote_inventory: Dictionary = {}  ## Host-owned two-slot inventories by peer.
+var _item_generation := 0  ## Invalidates in-flight landings when the round clears.
+var _late_spectator := false
+var _round_setup: Dictionary = {}
+var _results_data: Dictionary = {}
+var _dog_targets: Dictionary = {}
 var _item_uid_next: int = 1000           ## host: uid counter (throws mint new ones)
 var _inv_label: Label
 var _keys_door_open: bool = false        ## HOUSE KEYS turned in the back door lock
@@ -182,11 +195,14 @@ const PIP_ON := Color(1.0, 0.85, 0.25)
 const PIP_OFF := Color(0.25, 0.25, 0.28)
 const FLAG_COCOONED := 1
 const FLAG_HIDDEN := 2
+const FLAG_GROUNDED := 4
 
 func _ready() -> void:
 	_build_environment()
 	_build_level()
 	_spawn_actors()
+	_monster.footstep.connect(_on_monster_footstep)
+	_player.landed.connect(_on_local_landed)
 	_build_camera()
 	_build_hud()
 	_build_audio()
@@ -383,6 +399,9 @@ func _run_selftest() -> void:
 	_host_start_round()
 	var frag_ok := _fragments.size() >= fragment_spawn_min and _fragments.size() <= fragment_spawn_max
 	var first_id := _fragments[0].id() if not _fragments.is_empty() else ""
+	_apply_phase(Phase.ROUND, {})
+	if not _fragments.is_empty():
+		_player.global_position = _fragments[0].global_position + Vector3.UP * 0.2
 	_authoritative_collect_fragment(first_id, 1)
 	_authoritative_collect_fragment(first_id, 1)  # duplicate — must be ignored
 	var claim_ok := _collected_this_round() == 1 and _fragment_by_id(first_id).collected
@@ -742,7 +761,7 @@ func _selftest_items() -> bool:
 	_apply_phase(Phase.LOBBY, {})
 	_host_start_round()
 	_apply_phase(Phase.ROUND, {})
-	var spawned := _items.size() == item_can_count + item_popper_count
+	var spawned := _items.size() == item_can_count + item_popper_count + (1 if _has_objective(ObjectiveDef.Kind.DOG) else 0)
 	# A can must sit on the spawn floor, close enough to be seen on the way out
 	# of the living room. This is the fix for "no throwables found" — if it ever
 	# regresses, players stop meeting the item system at all.
@@ -781,6 +800,7 @@ func _selftest_items() -> bool:
 	NoiseBus.noise_emitted.connect(count_ping)
 	var before := _items.size()
 	_use_slot(0)
+	await get_tree().create_timer(1.0).timeout
 	NoiseBus.noise_emitted.disconnect(count_ping)
 	var thrown: bool = _inv[0] == -1 and _items.size() == before + 1 and pings[0] >= 1
 
@@ -939,6 +959,7 @@ func _selftest_keys() -> bool:
 	# Fake having the snack and stand at the dog: the hand-off must complete the
 	# task AND put HOUSE KEYS in a slot.
 	dog_o._has_snack = true
+	_inv[0] = Item.Kind.JERKY
 	var dogpos: Vector3 = dog_o._dog.position
 	_player.global_position = dogpos
 	dog_o.try_interact(dogpos)
@@ -1016,6 +1037,8 @@ func _floor_under_world(space: PhysicsDirectSpaceState3D, w: Vector3, floor_y: f
 	var q := PhysicsRayQueryParameters3D.create(
 		Vector3(w.x, floor_y + 1.2, w.z), Vector3(w.x, floor_y - 1.6, w.z))
 	q.collision_mask = 0xFFFFFFFF
+	# Probe the house floor, not the bag currently standing on this anchor.
+	q.exclude = [_player.get_rid()]
 	var hit := space.intersect_ray(q)
 	return not hit.is_empty() and absf((hit["position"] as Vector3).y - floor_y) < 0.7
 
@@ -1258,14 +1281,14 @@ func _reset_test_bag(at: Vector3) -> void:
 func _selftest_arm_via_door() -> String:
 	var opened := ""
 	for o: Objective in _objectives:
-		if _exit_for_objective(o.def.id) != "":
+		if _exit_for_objective(o.def.id) != "" and o.def.kind != ObjectiveDef.Kind.DOG:
 			_authoritative_complete(o.def.id)
 			opened = _exit_for_objective(o.def.id)
 			break
 	for o: Objective in _objectives:
 		if _done_ids.size() >= 3:
 			break
-		if not _done_ids.has(o.def.id):
+		if not _done_ids.has(o.def.id) and o.def.kind != ObjectiveDef.Kind.DOG:
 			_authoritative_complete(o.def.id)
 	# The BACK DOOR is deliberately NOT cracked by completing The Dog alone — the
 	# hand-off gives you the keys and you must carry them to its lock. That's the
@@ -1285,22 +1308,73 @@ func _selftest_escape_via(exit_name: String) -> bool:
 
 # ── World ──────────────────────────────────────────────────────────────────
 
+## The look. This is a NIGHT HORROR game, and it used to be lit like a daytime CAD
+## viewport: flat 0.6 ambient (which erases every shadow) under a 1.1-energy sun,
+## no fog, no occlusion, no tonemapping. That combination is what made simple
+## geometry read as "unfinished" rather than "stylised" — in this genre lighting
+## does more work than models, because darkness hides simplicity and builds the
+## mood at the same time. Everything here is free and touches no gameplay.
 func _build_environment() -> void:
 	var env := WorldEnvironment.new()
 	var e := Environment.new()
 	e.background_mode = Environment.BG_COLOR
-	e.background_color = Color(0.06, 0.06, 0.09)
+	e.background_color = Color(0.015, 0.016, 0.028)
+	# Ambient is FILL, not lighting. Just enough that unlit corners are murky
+	# rather than pure black — the lamps are supposed to be what you see by.
 	e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	e.ambient_light_color = Color(0.35, 0.35, 0.45)
-	e.ambient_light_energy = 0.6
+	e.ambient_light_color = Color(0.45, 0.50, 0.65)
+	e.ambient_light_energy = 0.24
+
+	# Filmic response. Godot's default Linear tonemap is what gives untextured
+	# scenes that washed-out "engine screenshot" flatness.
+	e.tonemap_mode = Environment.TONE_MAPPER_ACES
+	e.tonemap_exposure = 1.0
+	e.tonemap_white = 6.0
+
+	# Depth fog: reads as air in a big dark house, and conveniently swallows the
+	# far end of a room so bare geometry stops announcing itself.
+	e.fog_enabled = true
+	e.fog_light_color = Color(0.14, 0.16, 0.26)
+	e.fog_light_energy = 1.0
+	e.fog_density = 0.03
+	e.fog_sky_affect = 0.0
+
+	# Volumetric fog gives the lamps actual shafts. It's the single biggest
+	# "this looks like a real game" lever in Forward+ — and the first thing to
+	# turn off if a weaker GPU struggles.
+	e.volumetric_fog_enabled = true
+	e.volumetric_fog_density = 0.012
+	e.volumetric_fog_albedo = Color(0.72, 0.78, 0.95)
+	e.volumetric_fog_length = 48.0
+
+	# Contact shadows in every corner and under every object. This is what makes
+	# gray boxes read as SOLID rather than as flat shaded rectangles.
+	e.ssao_enabled = true
+	e.ssao_radius = 0.6
+	e.ssao_intensity = 2.6
+	e.ssao_power = 1.8
+
+	# Bloom on the practicals only — high threshold so the scene doesn't smear.
+	e.glow_enabled = true
+	e.glow_intensity = 0.55
+	e.glow_bloom = 0.1
+	e.glow_hdr_threshold = 1.05
+
+	e.adjustment_enabled = true
+	e.adjustment_contrast = 1.02
+	e.adjustment_saturation = 0.9
 	env.environment = e
 	add_child(env)
 
-	var sun := DirectionalLight3D.new()
-	sun.rotation = Vector3(deg_to_rad(-55.0), deg_to_rad(-40.0), 0.0)
-	sun.light_energy = 1.1
-	sun.shadow_enabled = true
-	add_child(sun)
+	# MOONLIGHT, not a sun. With real ceilings this barely reaches inside; its job
+	# is the yard and the cold rim on anything near a doorway. At 1.1 it was
+	# flooding the whole house with daylight.
+	var moon := DirectionalLight3D.new()
+	moon.rotation = Vector3(deg_to_rad(-42.0), deg_to_rad(-40.0), 0.0)
+	moon.light_energy = 0.14
+	moon.light_color = Color(0.62, 0.72, 1.0)
+	moon.shadow_enabled = true
+	add_child(moon)
 
 	# Porch light just outside the front door — flickers through the 10s intro,
 	# then dies as LIGHTS OUT begins (the round's opening beat).
@@ -1345,17 +1419,6 @@ func _spawn_actors() -> void:
 	_monster.lunged_hit.connect(_on_monster_lunged_hit)
 	add_child(_monster)
 
-	_aim = MeshInstance3D.new()
-	var cone := CylinderMesh.new()
-	cone.top_radius = 0.0
-	cone.bottom_radius = 0.18
-	cone.height = 0.6
-	_aim.mesh = cone
-	var m := StandardMaterial3D.new()
-	m.albedo_color = Color(1.0, 0.9, 0.2)
-	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_aim.set_surface_override_material(0, m)
-	add_child(_aim)
 
 func _monster_targets() -> Array:
 	var out: Array = [_player]
@@ -1394,7 +1457,7 @@ func _build_hud() -> void:
 	add_child(layer)
 
 	var help := Label.new()
-	help.text = "WASD shuffle   Space hop   E interact   1/2 use items   C 1st/3rd person   Q look back   V talk   M mic   Esc pause"
+	help.text = "WASD shuffle   Space hop   E interact   Esc menu"
 	help.position = Vector2(16, 12)
 	layer.add_child(help)
 
@@ -1467,6 +1530,8 @@ func _build_hud() -> void:
 	_tracker_label.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 	_tracker_label.position = Vector2(-330, 40)
 	_tracker_label.custom_minimum_size = Vector2(314, 160)
+	_tracker_label.size = Vector2(314, 160)
+	_tracker_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_tracker_label.add_theme_font_size_override("font_size", 17)
 	layer.add_child(_tracker_label)
 
@@ -1550,8 +1615,9 @@ void fragment() {
 	_breathing = AudioStreamPlayer.new()
 	_breathing.stream = SoundKit.get_stream("breath")
 	_breathing.bus = INBAG_BUS
-	_breathing.volume_db = -3.0
+	_breathing.volume_db = -12.0
 	add_child(_breathing)
+	_breathing.finished.connect(_repeat_breathing)
 
 	# Lore-fragment reader: a bottom panel that shows a collected fragment's title
 	# + body for a few seconds. Tapes "play" a procedural tape sound (no voice).
@@ -1574,6 +1640,7 @@ void fragment() {
 	_frag_body.add_theme_font_size_override("font_size", 18)
 	frag_box.add_child(_frag_body)
 	_tape_ui = AudioStreamPlayer.new()
+	_tape_ui.bus = SoundKit.EFFECTS_BUS
 	_tape_ui.stream = SoundKit.get_stream("tape")
 	add_child(_tape_ui)
 
@@ -1583,13 +1650,36 @@ void fragment() {
 	_results_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_results_overlay.visible = false
 	layer.add_child(_results_overlay)
+	var result_scroll := ScrollContainer.new()
+	result_scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
+	result_scroll.offset_left = 48
+	result_scroll.offset_right = -48
+	result_scroll.offset_top = 32
+	result_scroll.offset_bottom = -100
+	result_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_results_overlay.add_child(result_scroll)
 	_results_label = Label.new()
-	_results_label.set_anchors_preset(Control.PRESET_CENTER)
-	_results_label.position = Vector2(-300, -140)
-	_results_label.custom_minimum_size = Vector2(600, 280)
+	_results_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_results_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_results_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_results_label.add_theme_font_size_override("font_size", 26)
-	_results_overlay.add_child(_results_label)
+	_results_label.add_theme_font_size_override("font_size", 22)
+	result_scroll.add_child(_results_label)
+	var result_actions := HBoxContainer.new()
+	result_actions.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	result_actions.position = Vector2(-230, -72)
+	result_actions.custom_minimum_size = Vector2(460, 48)
+	result_actions.add_theme_constant_override("separation", 16)
+	_results_overlay.add_child(result_actions)
+	_replay_button = Button.new()
+	_replay_button.text = "ONE MORE NIGHT"
+	_replay_button.custom_minimum_size = Vector2(240, 48)
+	_replay_button.pressed.connect(replay_round)
+	result_actions.add_child(_replay_button)
+	var leave_button := Button.new()
+	leave_button.text = "LEAVE GAME"
+	leave_button.custom_minimum_size = Vector2(204, 48)
+	leave_button.pressed.connect(func() -> void: leave_requested.emit())
+	result_actions.add_child(leave_button)
 
 	# Outro bookend overlay: sits ON TOP of the results for a few seconds (sunrise
 	# glow or a quiet fade) then lifts to reveal the results. The results text is
@@ -1621,15 +1711,18 @@ void fragment() {
 
 func _build_audio() -> void:
 	_heartbeat = AudioStreamPlayer.new()
+	_heartbeat.bus = SoundKit.EFFECTS_BUS
 	_heartbeat.stream = SoundKit.get_stream("heartbeat")
 	_heartbeat.volume_db = -60.0
 	_heartbeat.autoplay = true
 	add_child(_heartbeat)
 	_sting = AudioStreamPlayer.new()
+	_sting.bus = SoundKit.EFFECTS_BUS
 	_sting.stream = SoundKit.get_stream("sting")
 	_sting.volume_db = -4.0
 	add_child(_sting)
 	_zip_sound = AudioStreamPlayer.new()
+	_zip_sound.bus = SoundKit.EFFECTS_BUS
 	_zip_sound.stream = SoundKit.get_stream("zipper")
 	add_child(_zip_sound)
 
@@ -1646,6 +1739,7 @@ func _enter_lobby() -> void:
 	_clear_fragments()
 	_clear_items()
 	_inv = [-1, -1]
+	_remote_inventory.clear()
 	_keys_door_open = false
 	_refresh_inv_hud()
 	_set_exits_locked(true)
@@ -1660,6 +1754,11 @@ func _enter_lobby() -> void:
 		_show_toast("LOBBY — host presses ENTER to start the night", 6.0)
 
 func _host_start_round() -> void:
+	# Anyone who watched the previous night joins the next one as a player.
+	for pid: int in LobbyManager.players:
+		LobbyManager.players[pid]["spectator"] = false
+	if _net_connected():
+		LobbyManager._broadcast()
 	# Host rolls the round layout: 5 of 6 objectives, each with a randomized
 	# clue spot + code, and (if The Glasses is drawn) a random blurred player.
 	var defs := ObjectiveDef.all()
@@ -1702,11 +1801,16 @@ func _host_start_round() -> void:
 	# Lore fragments share the clue-spawn anchors, so lore-hunting = objective risk.
 	var frags := _pick_fragments(anchors)
 	var items := _pick_items()
+	for d: ObjectiveDef in defs:
+		if d.kind == ObjectiveDef.Kind.DOG:
+			items.append({"uid": _item_uid_next, "kind": Item.Kind.JERKY,
+				"at": d.clue_spots[clue_idx[d.id]]})
+			_item_uid_next += 1
 	var data := {"objs": objs, "blurred": blurred, "monster_spawn": spawn,
 		"frags": frags, "items": items}
 	_apply_phase(Phase.LIGHTS_OUT, data)
 	if _net_connected():
-		_net_phase.rpc(Phase.LIGHTS_OUT, data)
+		_broadcast_ready("_net_phase", [Phase.LIGHTS_OUT, data])
 
 ## Assign each drawn objective's clue index so the round's clues spread across
 ## floors: fixed-floor objectives first (Glasses=upstairs, Dog=ground), then the
@@ -1843,10 +1947,20 @@ func _pick_monster_spawn(anchors: Array[Vector3]) -> Vector3:
 
 func _apply_phase(p: Phase, data: Dictionary) -> void:
 	phase = p
+	_player.set_controls_enabled(not _menu_open and p != Phase.RESULTS)
 	match p:
 		Phase.LOBBY:
 			_enter_lobby()
 		Phase.LIGHTS_OUT:
+			_round_setup = data.duplicate(true)
+			_late_spectator = _peer_is_spectator(_my_id())
+			_player.freeze = _late_spectator
+			_player.visible = not _late_spectator
+			_player.collision_layer = 0 if _late_spectator else 1
+			_player.collision_mask = 0 if _late_spectator else 3
+			_player.set_physics_process(not _late_spectator)
+			_results_overlay.visible = false
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if _menu_open else Input.MOUSE_MODE_CAPTURED
 			_phase_timer = lights_out_duration
 			_setup_objectives(data)
 			_setup_fragments(data)
@@ -1880,10 +1994,13 @@ func _apply_phase(p: Phase, data: Dictionary) -> void:
 				_porch_light.light_energy = 0.0  # the porch light finally dies — dark now
 			print("[NETTEST] phase=ROUND")
 		Phase.RESULTS:
+			_results_data = data.duplicate(true)
 			if _breathing and _breathing.playing:
 				_breathing.stop()
 			_show_results(data)
 			print("[NETTEST] phase=RESULTS outcome=%s" % data.get("outcome"))
+	if _late_spectator:
+		_become_spectator()
 
 @rpc("authority", "call_remote", "reliable")
 func _net_phase(p: int, data: Dictionary) -> void:
@@ -1896,7 +2013,7 @@ func _host_end_round(outcome: String) -> void:
 		"stats": _finalize_stats(), "names": _roster_names()}
 	_apply_phase(Phase.RESULTS, stats)
 	if _net_connected():
-		_net_phase.rpc(Phase.RESULTS, stats)
+		_broadcast_ready("_net_phase", [Phase.RESULTS, stats])
 
 # ── Round stats (host) ─────────────────────────────────────────────────────
 
@@ -1970,14 +2087,35 @@ func _show_results(data: Dictionary) -> void:
 	_bank_career_stats(stats)
 	# Everyone needs a way out of the recap, not just the host — ENTER only ever
 	# did anything on the host's machine, so a client's round simply never ended.
-	text += "\nhost presses ENTER to run it back"
-	text += "\nESC → LEAVE GAME to go back to the menu"
+	text += "\nOne more night?" if _is_authority() else "\nWaiting for the host to start another night."
 	_results_label.text = text
+	_replay_button.visible = _is_authority()
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_results_overlay.visible = true
 	_cocoon_overlay.visible = false
 	_phone_panel.visible = false
 	_frag_panel.visible = false
 	_start_outro(outcome)
+
+func replay_round() -> void:
+	if not _is_authority() or phase != Phase.RESULTS or _outro_active:
+		return
+	# Reset all round-local state on every peer, then immediately roll the next night.
+	_apply_phase(Phase.LOBBY, {})
+	if _net_connected():
+		_broadcast_ready("_net_phase", [Phase.LOBBY, {}])
+	_host_start_round()
+
+func set_menu_open(open: bool) -> void:
+	_menu_open = open
+	_player.set_controls_enabled(not open and phase != Phase.RESULTS and not _late_spectator)
+	if open:
+		_cancel_rescue_hold()
+		_unzip_target = null
+		_unzip_frag = null
+		_unzip_item = null
+		_rescue_target = null
+		_rescue_t = 0.0
 
 ## Play the closing bookend over the results: SUNRISE (light floods in, the
 ## Housesitter withdraws) or ALL-TUCKED-IN (the house goes quiet, lullaby fades).
@@ -2018,6 +2156,7 @@ func _update_outro(delta: float) -> void:
 # ── Objectives (data-driven; complete any 3 to arm escape) ─────────────────
 
 func _setup_objectives(data: Dictionary) -> void:
+	_dog_targets.clear()
 	_round_stats.clear()      # fresh scorecard every round
 	_cocoon_counter = 0
 	_career_banked = false
@@ -2040,9 +2179,9 @@ func _setup_objectives(data: Dictionary) -> void:
 		o.setup(def, entry, blurred_me and is_glasses)
 		o.completed.connect(_on_objective_completed)
 		o.revealed.connect(_on_objective_revealed)
+		o.dog_barked.connect(_on_dog_barked)
 		o.action_noise.connect(func(pos: Vector3, loud: float) -> void: NoiseBus.emit_noise(pos, loud))
 		o.toast.connect(func(t: String) -> void: _show_toast(t, 5.0))
-		o.keys_granted.connect(_on_keys_granted)
 		_objectives.append(o)
 	# Blur the assigned player's screen until they find their glasses — but ONLY
 	# with 2+ players (the handicap needs teammates to describe the room). Solo,
@@ -2094,12 +2233,10 @@ func _collected_this_round() -> int:
 			n += 1
 	return n
 
-## Local player finished the unzip on a fragment: show its contents right away
-## (optimistic), then ask the host to commit the once-per-lobby claim.
+## Show the fragment only after the host accepts the claim.
 func _finish_fragment_pickup(fr: Fragment) -> void:
 	if fr == null or fr.collected:
 		return
-	_show_fragment(fr)
 	if _is_authority():
 		_authoritative_collect_fragment(fr.id(), _my_id())
 	else:
@@ -2111,13 +2248,23 @@ func _net_request_collect(id: String) -> void:
 		_authoritative_collect_fragment(id, multiplayer.get_remote_sender_id())
 
 func _authoritative_collect_fragment(id: String, by_pid: int) -> void:
-	if id == "" or _frag_collected_ids.has(id):
+	if not _is_authority() or phase != Phase.ROUND or id == "" or _frag_collected_ids.has(id):
 		return  # first grab in the lobby wins; ignore the rest
+	var fr := _fragment_by_id(id)
+	var bag: Node3D = _player if by_pid == _my_id() else _remote_bags.get(by_pid)
+	if fr == null or fr.collected or not is_instance_valid(bag) or not bag.global_position.is_finite():
+		return
+	if (_player.state == SleepingBagPlayer.State.COCOONED if by_pid == _my_id() else bag.get_meta("cocooned", false)):
+		return
+	# Preserve the perch height gate: nearby on the floor is not on the perch.
+	if bag.global_position.distance_to(fr.global_position) > Fragment.NEAR + 0.35 \
+			or bag.global_position.y < fr.global_position.y + 0.05:
+		return
 	_frag_collected_ids.append(id)
 	_bump(by_pid, "fragments")
 	_apply_fragment_collected(id, by_pid)
 	if _net_connected():
-		_net_fragment_collected.rpc(id, by_pid)
+		_broadcast_ready("_net_fragment_collected", [id, by_pid])
 
 @rpc("authority", "call_remote", "reliable")
 func _net_fragment_collected(id: String, by_pid: int) -> void:
@@ -2127,10 +2274,13 @@ func _net_fragment_collected(id: String, by_pid: int) -> void:
 ## and — for players who weren't the one who grabbed it — a light "someone found" note.
 func _apply_fragment_collected(id: String, by_pid: int) -> void:
 	var fr := _fragment_by_id(id)
-	if fr != null:
-		fr.mark_collected()
+	if fr == null or fr.collected:
+		return
+	fr.mark_collected()
 	Scrapbook.collect(id)
-	if by_pid != _my_id():
+	if by_pid == _my_id():
+		_show_fragment(fr)
+	else:
 		var fdata := LoreFragments.by_id(id)
 		_show_toast("A fragment was found: %s" % fdata.get("title", "?"), 3.0)
 	print("[NETTEST] fragment collected: %s by=%d (%d/%d)" % [
@@ -2138,14 +2288,14 @@ func _apply_fragment_collected(id: String, by_pid: int) -> void:
 
 # ── Items & the 2-slot inventory ───────────────────────────────────────────
 # World items mirror the fragment flow (host round data -> identical props on
-# every peer -> host-authoritative first-claim-wins). The inventory is LOCAL:
-# only which WORLD items exist is synced; what's in your bag is your business
-# until you use it, which is always a world-visible (and audible) act.
+# every peer -> host-authoritative first-claim-wins). The host also owns each
+# bag's slots, so using, dropping and collecting items form one transaction.
 
 func _setup_items(data: Dictionary) -> void:
 	_unzip_item = null
 	_clear_items()
 	_inv = [-1, -1]
+	_remote_inventory.clear()
 	_keys_door_open = false
 	for entry: Dictionary in data.get("items", []):
 		_spawn_item(int(entry.get("uid", -1)), int(entry.get("kind", 0)),
@@ -2161,6 +2311,7 @@ func _spawn_item(uid: int, kind: int, at: Vector3) -> Item:
 	return it
 
 func _clear_items() -> void:
+	_item_generation += 1
 	for it: Item in _items:
 		it.queue_free()
 	_items.clear()
@@ -2176,6 +2327,26 @@ func _inv_free_slot() -> int:
 
 func _inv_has(kind: int) -> bool:
 	return _inv.has(kind)
+
+func _inventory_for(pid: int) -> Array:
+	if pid == _my_id():
+		return _inv
+	if not _remote_inventory.has(pid):
+		_remote_inventory[pid] = [-1, -1]
+	return _remote_inventory[pid]
+
+func _sync_inventory(pid: int) -> void:
+	if pid == _my_id():
+		_refresh_inv_hud()
+	elif _net_connected() and multiplayer.get_peers().has(pid):
+		var slots := _inventory_for(pid)
+		_net_inventory.rpc_id(pid, slots[0], slots[1])
+
+@rpc("authority", "call_remote", "reliable")
+func _net_inventory(first: int, second: int) -> void:
+	_inv[0] = first
+	_inv[1] = second
+	_refresh_inv_hud()
 
 ## Local player finished the unzip on a world item: ask the host to commit the
 ## claim. NOT optimistic — two players can race for the same can, and a can
@@ -2194,12 +2365,31 @@ func _net_request_take_item(uid: int) -> void:
 		_authoritative_take_item(uid, multiplayer.get_remote_sender_id())
 
 func _authoritative_take_item(uid: int, by_pid: int) -> void:
+	if not _is_authority() or phase != Phase.ROUND:
+		return
 	var it := _item_by_uid(uid)
 	if it == null or it.taken:
 		return  # already claimed — the loser's E press just fizzles
+	var bag: Node3D = _player if by_pid == _my_id() else _remote_bags.get(by_pid)
+	if not is_instance_valid(bag) or not bag.global_position.is_finite():
+		return
+	if by_pid == _my_id():
+		if _player.state == SleepingBagPlayer.State.COCOONED or _inv_free_slot() == -1:
+			return
+	elif bag.get_meta("cocooned", false):
+		return
+	if bag.global_position.distance_to(it.global_position) > Item.NEAR + 0.35:
+		return
+	var slots := _inventory_for(by_pid)
+	var slot := slots.find(-1)
+	if slot == -1:
+		return
+	if by_pid != _my_id():
+		slots[slot] = it.kind
 	_apply_item_taken(uid, by_pid)
 	if _net_connected():
-		_net_item_taken.rpc(uid, by_pid)
+		_broadcast_ready("_net_item_taken", [uid, by_pid])
+	_sync_inventory(by_pid)
 
 @rpc("authority", "call_remote", "reliable")
 func _net_item_taken(uid: int, by_pid: int) -> void:
@@ -2214,42 +2404,60 @@ func _apply_item_taken(uid: int, by_pid: int) -> void:
 		var slot := _inv_free_slot()
 		if slot != -1:
 			_inv[slot] = it.kind
-			_show_toast("%s  —  press %d to use" % [it.display_name(), slot + 1], 3.5)
+			if it.kind == Item.Kind.JERKY:
+				_show_toast("BEEF JERKY — carry it to the dog. Press %d to give it nearby or set it down." % (slot + 1), 6.0)
+			else:
+				_show_toast("%s  —  press %d to use" % [it.display_name(), slot + 1], 3.5)
 		_refresh_inv_hud()
 	print("[NETTEST] item taken: uid=%d kind=%d by=%d" % [uid, it.kind, by_pid])
 
 ## Drop everything where you stand — called on cocoon. Keys hitting the floor
 ## next to a caught friend is the recover-the-keys beat, not a fail state.
 func _drop_inventory() -> void:
-	for slot in _inv.size():
-		if _inv[slot] != -1:
-			# Spill to either side of the bag — offsets are bag-relative so the
-			# two items don't land inside each other at a smaller scale.
+	if _is_authority():
+		_drop_peer_inventory(_my_id(), _player.global_position)
+
+func _drop_peer_inventory(pid: int, at: Vector3) -> void:
+	if not _is_authority() or not at.is_finite():
+		return
+	var slots := _inventory_for(pid)
+	for slot in slots.size():
+		if slots[slot] != -1:
+			var kind: int = slots[slot]
+			slots[slot] = -1
 			var side := BagVisual.BAG_HEIGHT * 0.45 * (slot * 2 - 1)
-			_request_spawn_item(_inv[slot], _player.global_position
-				+ Vector3(side, 0.05, BagVisual.BAG_HEIGHT * 0.35))
-			_inv[slot] = -1
-	_refresh_inv_hud()
+			_authoritative_spawn_item(kind, _drop_position(at, Vector3(side, 0, BagVisual.BAG_HEIGHT * 0.35)))
+	_sync_inventory(pid)
 
-## Anyone can ask the host to materialize a world item (drops, thrown landings).
-## The host mints the uid so two peers can never invent the same one.
-func _request_spawn_item(kind: int, at: Vector3) -> void:
-	if _is_authority():
-		_authoritative_spawn_item(kind, at)
-	else:
-		_net_request_spawn_item.rpc_id(1, kind, at)
-
-@rpc("any_peer", "call_remote", "reliable")
-func _net_request_spawn_item(kind: int, at: Vector3) -> void:
-	if _is_authority():
-		_authoritative_spawn_item(kind, at)
+func _drop_position(at: Vector3, offset: Vector3) -> Vector3:
+	var space := get_world_3d().direct_space_state
+	var target := at + Vector3(offset.x, 0, offset.z)
+	if offset.length_squared() > 0.0001:
+		var wall_query := PhysicsRayQueryParameters3D.create(at, target, 1)
+		wall_query.exclude = [_player.get_rid()]
+		var wall := space.intersect_ray(wall_query)
+		if wall:
+			var travel := maxf(at.distance_to(wall["position"]) - 0.16, 0.0)
+			target = at + (target - at).normalized() * travel
+	# Try the requested spot, then the ground under the bag. A ledge must not
+	# send an essential item down through the house or leave it floating.
+	for candidate: Vector3 in [target, at]:
+		var floor_query := PhysicsRayQueryParameters3D.create(candidate + Vector3.UP * 0.15,
+			candidate + Vector3.DOWN * 1.2, 1)
+		floor_query.exclude = [_player.get_rid()]
+		var floor_hit := space.intersect_ray(floor_query)
+		if floor_hit and (floor_hit["normal"] as Vector3).y > 0.45:
+			return floor_hit["position"] + Vector3.UP * 0.025
+	return at + Vector3.UP * 0.05
 
 func _authoritative_spawn_item(kind: int, at: Vector3) -> void:
+	if not _is_authority() or not Item.DEFS.has(kind) or not at.is_finite():
+		return
 	var uid := _item_uid_next
 	_item_uid_next += 1
 	_spawn_item(uid, kind, at)
 	if _net_connected():
-		_net_item_spawned.rpc(uid, kind, at)
+		_broadcast_ready("_net_item_spawned", [uid, kind, at])
 
 @rpc("authority", "call_remote", "reliable")
 func _net_item_spawned(uid: int, kind: int, at: Vector3) -> void:
@@ -2258,45 +2466,77 @@ func _net_item_spawned(uid: int, kind: int, at: Vector3) -> void:
 # ── Using items (keys 1 / 2) ───────────────────────────────────────────────
 
 func _use_slot(slot: int) -> void:
-	if phase != Phase.ROUND or _player.state == SleepingBagPlayer.State.COCOONED:
+	if slot < 0 or slot >= _inv.size() or phase != Phase.ROUND or _player.state == SleepingBagPlayer.State.COCOONED:
 		return
-	var kind := _inv[slot]
+	if _is_authority():
+		_authoritative_use_item(_my_id(), slot, _inv[slot], _player.facing)
+	else:
+		_net_use_item.rpc_id(1, slot, _inv[slot], _player.facing)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _net_use_item(slot: int, kind: int, facing: Vector3) -> void:
+	_authoritative_use_item(multiplayer.get_remote_sender_id(), slot, kind, facing)
+
+func _authoritative_use_item(pid: int, slot: int, kind: int, facing: Vector3) -> void:
+	if not _is_authority() or phase != Phase.ROUND or slot < 0 or slot > 1 or not facing.is_finite():
+		return
+	var bag: Node3D = _player if pid == _my_id() else _remote_bags.get(pid)
+	if not is_instance_valid(bag) or not bag.global_position.is_finite():
+		return
+	if (_player.state == SleepingBagPlayer.State.COCOONED if pid == _my_id() else bag.get_meta("cocooned", false)):
+		return
+	var slots := _inventory_for(pid)
+	if kind == -1 or slots[slot] != kind:
+		_sync_inventory(pid)
+		return
 	match kind:
+		Item.Kind.JERKY:
+			var fed := false
+			for objective: Objective in _objectives:
+				if objective.def.kind == ObjectiveDef.Kind.DOG and not objective.done \
+						and bag.global_position.distance_to(objective._dog.global_position) <= Objective.NEAR + 0.35:
+					_authoritative_complete(objective.def.id, pid)
+					fed = true
+					break
+			if not fed:
+				slots[slot] = -1
+				_authoritative_spawn_item(Item.Kind.JERKY,
+					_drop_position(bag.global_position, Vector3(facing.x, 0, facing.z).normalized() * 0.6))
 		Item.Kind.CAN:
-			_inv[slot] = -1
-			_throw_can()
+			slots[slot] = -1
+			_throw_can(pid, bag.global_position, facing)
 		Item.Kind.POPPER:
-			_inv[slot] = -1
-			_use_popper()
+			slots[slot] = -1
+			_use_popper(pid, bag.global_position)
 		Item.Kind.KEYS:
-			if _near_back_door() and not _keys_door_open:
-				# The payoff of the whole carry: turn them in the lock. They stay
-				# in the door — the slot is free again, but so is the way out.
-				_inv[slot] = -1
-				_request_keys_turned()
+			if _position_near_back_door(bag.global_position) and not _keys_door_open:
+				_authoritative_keys_turned(pid)
 			else:
-				# Anywhere else is "set them down" — the deliberate hand-off to a
-				# faster friend, at the cost of keys lying on the floor.
-				_inv[slot] = -1
-				_request_spawn_item(Item.Kind.KEYS,
-					_player.global_position + _player.facing * 0.6 + Vector3.UP * 0.05)
-				_show_toast("You set the keys down.", 2.5)
+				slots[slot] = -1
+				_authoritative_spawn_item(Item.Kind.KEYS,
+					_drop_position(bag.global_position, Vector3(facing.x, 0, facing.z).normalized() * 0.6))
 		_:
 			return
-	_refresh_inv_hud()
+	_sync_inventory(pid)
 
 ## The can throw: noise SOMEWHERE ELSE, the only verb that turns the monster's
 ## hearing into a tool. Landing point is decided at throw time (deterministic
 ## for everyone), the flight is just a visual.
-func _throw_can() -> void:
-	var from := _player.global_position + Vector3.UP * 0.7
-	var land := _throw_landing(from, _player.facing)
-	_animate_throw(from, land)
-	# Only the thrower emits — NoiseBus already relays client pings to the host,
-	# so if every peer emitted, the monster would hear one throw N times.
-	NoiseBus.emit_noise(land, can_loudness)
-	SoundKit.play_at(self, land, "thump")
-	_request_spawn_item(Item.Kind.CAN, land)   # re-grabbable where it lands
+func _throw_can(pid: int, at: Vector3, facing: Vector3) -> void:
+	var from := at + Vector3.UP * 0.7
+	var land := _throw_landing(from, facing)
+	_net_throw_fx(from, land)
+	if _net_connected():
+		_broadcast_ready("_net_throw_fx", [from, land])
+	var generation := _item_generation
+	await get_tree().create_timer(_throw_duration(from, land)).timeout
+	if generation != _item_generation or phase != Phase.ROUND:
+		return
+	_item_noise(pid, land, can_loudness)
+	_net_can_impact(land)
+	if _net_connected():
+		_broadcast_ready("_net_can_impact", [land])
+	_authoritative_spawn_item(Item.Kind.CAN, land)   # re-grabbable where it lands
 	# Feeding the dog the dog food is the first thing anyone tries. It doesn't
 	# work (the jerky is the hand-off) — but it has to SAY so, or trying the
 	# obvious thing looks broken.
@@ -2304,13 +2544,28 @@ func _throw_can() -> void:
 		if o.dog_sniffs_can(land):
 			_show_toast("The dog sniffs the can and loses interest. It wants the good stuff.", 3.5)
 			break
-	if _net_connected():
-		_net_throw_fx.rpc(from, land)
 	print("[NETTEST] can thrown to %v" % land)
 
-@rpc("any_peer", "call_remote", "reliable")
+@rpc("authority", "call_remote", "reliable")
 func _net_throw_fx(from: Vector3, land: Vector3) -> void:
-	_animate_throw(from, land)   # visual only; the thrower already emitted noise
+	_animate_throw(from, land)
+
+@rpc("authority", "call_remote", "reliable")
+func _net_can_impact(land: Vector3) -> void:
+	SoundKit.play_at(self, land, "can_land", 20.0, -8.0, SoundKit.variation_pitch())
+
+func _throw_duration(from: Vector3, land: Vector3) -> float:
+	return clampf(from.distance_to(land) / 9.0, 0.25, 0.9)
+
+func _item_noise(pid: int, at: Vector3, loudness: float) -> void:
+	if pid == _my_id():
+		NoiseBus.emit_noise(at, loudness)
+	else:
+		# The throw was accepted before flight; its owner may have left since.
+		_credit_noise(pid, loudness)
+		_relaying_remote_noise = true
+		NoiseBus.emit_noise(at, loudness)
+		_relaying_remote_noise = false
 
 ## Where a can thrown from `from` toward `dir` ends up: march the throw range in
 ## steps, raycasting down; stop early if a wall blocks the segment. Gray-box
@@ -2334,20 +2589,11 @@ func _throw_landing(from: Vector3, dir: Vector3) -> Vector3:
 
 ## A small tween arc — pure garnish, the landing is already decided.
 func _animate_throw(from: Vector3, land: Vector3) -> void:
-	var ball := MeshInstance3D.new()
-	var m := CylinderMesh.new()
-	m.top_radius = 0.09
-	m.bottom_radius = 0.09
-	m.height = 0.22
-	ball.mesh = m
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Item.DEFS[Item.Kind.CAN]["color"]
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	ball.set_surface_override_material(0, mat)
+	var ball := ItemVisual.build(Item.Kind.CAN)
 	add_child(ball)
 	ball.global_position = from
 	var mid := (from + land) * 0.5 + Vector3.UP * 1.6
-	var dur := clampf(from.distance_to(land) / 9.0, 0.25, 0.9)
+	var dur := _throw_duration(from, land)
 	var step := func(t: float) -> void:
 		# Quadratic bezier: from -> mid -> land.
 		var a := from.lerp(mid, t)
@@ -2359,74 +2605,93 @@ func _animate_throw(from: Vector3, land: Vector3) -> void:
 
 ## The party popper: a bang at YOUR feet. She flinches mid-lunge — and now she
 ## knows exactly where you are. An exchange, not an escape button.
-func _use_popper() -> void:
-	var pos := _player.global_position
-	NoiseBus.emit_noise(pos, popper_loudness)
-	SoundKit.play_at(self, pos, "pop")
-	_show_toast("*POP* — she flinches!", 2.5)
-	if _is_authority():
-		_monster.flinch(pos, popper_flinch_secs)
-	else:
-		_net_popper_used.rpc_id(1, pos)
+func _use_popper(pid: int, pos: Vector3) -> void:
+	_item_noise(pid, pos, popper_loudness)
+	_monster.flinch(pos, popper_flinch_secs)
+	_net_popper_used(pos)
+	if _net_connected():
+		_broadcast_ready("_net_popper_used", [pos])
 	print("[NETTEST] popper used at %v" % pos)
 
-@rpc("any_peer", "call_remote", "reliable")
+@rpc("authority", "call_remote", "reliable")
 func _net_popper_used(pos: Vector3) -> void:
-	if _is_authority():
-		_monster.flinch(pos, popper_flinch_secs)
+	SoundKit.play_at(self, pos, "pop")
+	if _player.global_position.distance_to(pos) < 3.0:
+		_show_toast("*POP* — she flinches!", 2.5)
 
 # ── The house keys (DOG hand-off -> carried -> turned in the back door) ────
 
-## The dog hand-off ran on THIS machine (interaction is local), so the keys land
-## in THIS inventory. Hands full: they drop at the dog's feet instead — still in
-## the world, still somebody's problem.
-func _on_keys_granted(at: Vector3) -> void:
-	var slot := _inv_free_slot()
+## Only the first accepted dog completion grants keys. Hands full: drop them
+## beside the dog, where a teammate can pick them up.
+func _grant_keys(pid: int, at: Vector3) -> void:
+	if not _is_authority() or (pid != _my_id() and not _remote_bags.has(pid)):
+		return
+	var slots := _inventory_for(pid)
+	var slot := slots.find(-1)
 	if slot != -1:
-		_inv[slot] = Item.Kind.KEYS
-		_refresh_inv_hud()
+		slots[slot] = Item.Kind.KEYS
+	else:
+		_authoritative_spawn_item(Item.Kind.KEYS, at + Vector3(0.4, 0.05, 0.0))
+	_sync_inventory(pid)
+	if pid == _my_id():
+		_net_keys_granted(slot)
+	elif _net_connected() and multiplayer.get_peers().has(pid):
+		_net_keys_granted.rpc_id(pid, slot)
+	print("[NETTEST] keys granted (slot=%d)" % slot)
+
+@rpc("authority", "call_remote", "reliable")
+func _net_keys_granted(slot: int) -> void:
+	if slot != -1:
 		_show_toast("THE DOG GIVES UP THE KEYS — carry them to the BACK DOOR (press %d there)."
 			% (slot + 1), 6.0)
 	else:
-		_request_spawn_item(Item.Kind.KEYS, at + Vector3(0.4, 0.05, 0.0))
 		_show_toast("The dog drops the keys at your feet — your hands are full!", 5.0)
-	print("[NETTEST] keys granted (slot=%d)" % slot)
 
 func _near_back_door() -> bool:
+	return _position_near_back_door(_player.global_position)
+
+func _position_near_back_door(at: Vector3) -> bool:
+	if not at.is_finite():
+		return false
 	for e: Dictionary in HouseSuburban.exits():
 		if e["name"] == "BACK DOOR":
 			# "At the door" — scaled down with the bag, but still looser than a
 			# normal interact reach so the turn-the-keys moment isn't pixel-hunting.
-			return _player.global_position.distance_to(e["at"]) < 1.6
+			return at.distance_to(e["at"]) < 1.6
 	return false
 
-func _request_keys_turned() -> void:
-	if _is_authority():
-		_authoritative_keys_turned()
-	else:
-		_net_request_keys_turned.rpc_id(1)
-
-@rpc("any_peer", "call_remote", "reliable")
-func _net_request_keys_turned() -> void:
-	if _is_authority():
-		_authoritative_keys_turned()
-
-func _authoritative_keys_turned() -> void:
-	if _keys_door_open:
+func _authoritative_keys_turned(by_pid: int) -> void:
+	if not _is_authority() or phase != Phase.ROUND or _keys_door_open:
 		return
+	var bag: Node3D = _player if by_pid == _my_id() else _remote_bags.get(by_pid)
+	if not is_instance_valid(bag) or not _position_near_back_door(bag.global_position):
+		return
+	if by_pid == _my_id():
+		if _player.state == SleepingBagPlayer.State.COCOONED or not _inv_has(Item.Kind.KEYS):
+			return
+	elif bag.get_meta("cocooned", false):
+		return
+	var slots := _inventory_for(by_pid)
+	var key_slot := slots.find(Item.Kind.KEYS)
+	if key_slot == -1:
+		return
+	slots[key_slot] = -1
 	_apply_keys_turned()
 	if _net_connected():
-		_net_keys_turned.rpc()
+		_broadcast_ready("_net_keys_turned", [])
+	_sync_inventory(by_pid)
 
 @rpc("authority", "call_remote", "reliable")
 func _net_keys_turned() -> void:
 	_apply_keys_turned()
 
 func _apply_keys_turned() -> void:
+	if _keys_door_open:
+		return
 	_keys_door_open = true
 	_refresh_exit_doors()
 	_refresh_inv_hud()
-	SoundKit.play_at(self, _player.global_position, "click")
+	SoundKit.play_at(self, _player.global_position, "unlock", 12.0, -8.0)
 	_show_toast("*click* — the keys turn. They stay in the back door lock.", 4.0)
 	print("[NETTEST] keys turned in the back door")
 
@@ -2451,7 +2716,7 @@ func _show_fragment(fr: Fragment) -> void:
 	if fr.frag_type() == "tape":
 		_tape_ui.play()
 	else:
-		SoundKit.play_at(self, _player.global_position, "zipper")
+		SoundKit.play_at(self, _player.global_position, "page", 5.0, -10.0)
 
 func _has_objective(kind: int) -> bool:
 	for o: Objective in _objectives:
@@ -2462,7 +2727,7 @@ func _has_objective(kind: int) -> bool:
 func _on_objective_revealed(id: String) -> void:
 	# A player read a clue — reveal the action detail on every HUD (host-owned).
 	if _is_authority():
-		_net_reveal.rpc(id)
+		_broadcast_ready("_net_reveal", [id])
 		_apply_reveal(id)
 	else:
 		_report_reveal.rpc_id(1, id)
@@ -2470,7 +2735,7 @@ func _on_objective_revealed(id: String) -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func _report_reveal(id: String) -> void:
 	if _is_authority():
-		_net_reveal.rpc(id)
+		_broadcast_ready("_net_reveal", [id])
 		_apply_reveal(id)
 
 @rpc("authority", "call_remote", "reliable")
@@ -2490,17 +2755,85 @@ func _on_objective_completed(id: String) -> void:
 
 @rpc("any_peer", "call_remote", "reliable")
 func _report_objective(id: String) -> void:
-	if _is_authority():
-		_authoritative_complete(id)
-
-func _authoritative_complete(id: String) -> void:
-	if _done_ids.has(id):
+	if not _is_authority():
 		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender <= 0 or not multiplayer.get_peers().has(sender):
+		return
+	if _done_ids.has(id):
+		_net_objective_done.rpc_id(sender, id, _escape_armed)
+	elif _can_report_objective(sender, id):
+		_authoritative_complete(id, sender)
+	else:
+		_net_objective_rejected.rpc_id(sender, id)
+
+@rpc("authority", "call_remote", "reliable")
+func _net_objective_rejected(id: String) -> void:
+	if _done_ids.has(id) or phase != Phase.ROUND:
+		return
+	for objective: Objective in _objectives:
+		if objective.def.id == id:
+			objective.retry_completion()
+			_show_toast("Couldn't finish that task. Move closer and try again.", 3.0)
+			return
+
+func _can_report_objective(pid: int, id: String) -> bool:
+	if not _is_authority() or phase != Phase.ROUND or not _remote_bags.has(pid) or _done_ids.has(id):
+		return false
+	var bag: Node3D = _remote_bags[pid]
+	if bag.get_meta("cocooned", false) or not bag.global_position.is_finite():
+		return false
+	for objective: Objective in _objectives:
+		if objective.def.id != id:
+			continue
+		var at := objective.def.action_spot
+		match objective.def.kind:
+			ObjectiveDef.Kind.GLASSES:
+				if pid != _blurred_pid:
+					return false
+				at = objective.def.clue_spots[int(objective.seed.get("clue", 0))]
+			ObjectiveDef.Kind.DOG:
+				if not _inventory_for(pid).has(Item.Kind.JERKY):
+					return false
+				if not is_instance_valid(objective._dog):
+					return false
+				at = objective._dog.global_position
+			ObjectiveDef.Kind.DEADBOLT:
+				if _bodies_near(at, Objective.NEAR + 0.35) < 2:
+					return false
+		# Small allowance for the host's interpolated pose at packet receipt.
+		return bag.global_position.distance_to(at) <= Objective.NEAR + 0.35
+	return false
+
+func _authoritative_complete(id: String, by_pid: int = 0) -> void:
+	if not _is_authority() or _done_ids.has(id) or not _objectives.any(func(o: Objective) -> bool: return o.def.id == id):
+		return
+	for objective: Objective in _objectives:
+		if objective.def.id == id and objective.def.kind == ObjectiveDef.Kind.DOG:
+			var feeder := _my_id() if by_pid == 0 else by_pid
+			var bag: Node3D = _player if feeder == _my_id() else _remote_bags.get(feeder)
+			if not is_instance_valid(bag) or not bag.global_position.is_finite() \
+					or bag.global_position.distance_to(objective._dog.global_position) > Objective.NEAR + 0.35:
+				return
+			if (_player.state == SleepingBagPlayer.State.COCOONED if feeder == _my_id() else bag.get_meta("cocooned", false)):
+				return
+			var slots := _inventory_for(feeder)
+			var snack_slot := slots.find(Item.Kind.JERKY)
+			if snack_slot == -1:
+				return
+			slots[snack_slot] = -1
+			_item_noise(feeder, objective._dog.global_position, objective.def.noise_loudness)
+			_on_dog_barked(objective._dog.global_position, true)
 	_mark_objective_done(id)
 	var armed := _done_ids.size() >= 3
 	if armed and not _escape_armed:
 		_arm_escape()
-	_net_objective_done.rpc(id, _escape_armed)
+	if _net_connected():
+		_broadcast_ready("_net_objective_done", [id, _escape_armed])
+	for objective: Objective in _objectives:
+		if objective.def.id == id and objective.def.kind == ObjectiveDef.Kind.DOG:
+			_grant_keys(_my_id() if by_pid == 0 else by_pid, objective._dog.global_position)
+			break
 
 @rpc("authority", "call_remote", "reliable")
 func _net_objective_done(id: String, armed: bool) -> void:
@@ -2592,11 +2925,13 @@ func _exit_door_locked(group: String) -> bool:
 	return nodes.size() > 0 and (nodes[0] as StaticBody3D).visible
 
 func _player_at_exit() -> String:
+	return _position_at_exit(_player.global_position)
+
+func _position_at_exit(p: Vector3) -> String:
 	# Which OPEN exit (if any) the local player is standing in. Requires the
 	# escape phase to be armed AND that specific door's objective to be done.
-	if not _escape_armed:
+	if not _escape_armed or not p.is_finite():
 		return ""
-	var p := _player.global_position
 	for e: Dictionary in HouseSuburban.exits():
 		if not _exit_is_open(e["name"]):
 			continue
@@ -2608,10 +2943,26 @@ func _player_at_exit() -> String:
 
 @rpc("any_peer", "call_remote", "reliable")
 func _net_report_escape(pid: int) -> void:
-	if _is_authority() and phase == Phase.ROUND and _escape_armed:
-		print("[NETTEST] escape by peer %d" % pid)
-		_stat(pid)["escaped"] = true
-		_host_end_round("ESCAPE")
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		sender = _my_id()
+	if pid != sender or not _can_peer_escape(sender):
+		return
+	print("[NETTEST] escape by peer %d" % sender)
+	_stat(sender)["escaped"] = true
+	_host_end_round("ESCAPE")
+
+func _can_peer_escape(pid: int) -> bool:
+	if not _is_authority() or phase != Phase.ROUND or not _escape_armed:
+		return false
+	if pid == _my_id():
+		return _player.state != SleepingBagPlayer.State.COCOONED and _spectating == -1 \
+			and _position_at_exit(_player.global_position) != ""
+	if not _remote_bags.has(pid):
+		return false
+	var bag: Node3D = _remote_bags[pid]
+	return is_instance_valid(bag) and not bag.get_meta("cocooned", false) \
+		and _position_at_exit(bag.global_position) != ""
 
 # ── Cocoon & rescue ────────────────────────────────────────────────────────
 
@@ -2620,12 +2971,17 @@ func _on_monster_lunged_hit(target: Node3D) -> void:
 	if target == _player:
 		_mark_cocooned_stat(_my_id())
 		_cocoon_local()
+		if _net_connected():
+			_broadcast_ready("_net_capture", [_my_id()])
 	else:
 		for pid: int in _remote_bags:
 			if _remote_bags[pid] == target:
 				target.set_meta("cocooned", true)
+				_drop_peer_inventory(pid, target.global_position)
+				VoiceManager.set_muffled(pid, true)
 				_mark_cocooned_stat(pid)
-				_net_cocoon.rpc_id(pid)
+				if _net_connected():
+					_broadcast_ready("_net_capture", [pid])
 				break
 
 ## Ordinal, not a count — FIRST TUCKED IN needs to know who the Housesitter got first.
@@ -2638,8 +2994,21 @@ func _mark_cocooned_stat(pid: int) -> void:
 		_cocoon_counter += 1
 
 @rpc("authority", "call_remote", "reliable")
-func _net_cocoon() -> void:
-	_cocoon_local()
+func _net_capture(pid: int) -> void:
+	if pid == _my_id():
+		_cocoon_local()
+	else:
+		if not _remote_bags.has(pid):
+			_spawn_remote_bag(pid)
+		_remote_bags[pid].set_meta("cocooned", true)
+		VoiceManager.set_muffled(pid, true)
+
+func _repeat_breathing() -> void:
+	# A brief rest between recorded phrases avoids a hard loop splice.
+	await get_tree().create_timer(0.4).timeout
+	if is_instance_valid(_player) and _player.state == SleepingBagPlayer.State.COCOONED \
+			and phase == Phase.ROUND and not _breathing.playing:
+		_breathing.play()
 
 func _cocoon_local() -> void:
 	if _player.state == SleepingBagPlayer.State.COCOONED:
@@ -2665,9 +3034,74 @@ func _cocoon_local() -> void:
 		_breathing.play()
 	print("[NETTEST] cocooned (me)")
 
-@rpc("any_peer", "call_remote", "reliable")
+@rpc("authority", "call_remote", "reliable")
 func _net_rescued(victim_pid: int) -> void:
 	_apply_rescue(victim_pid)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_rescue(victim_pid: int) -> void:
+	_receive_rescue_hold(multiplayer.get_remote_sender_id(), victim_pid)
+
+func _receive_rescue_hold(rescuer_pid: int, victim_pid: int) -> void:
+	if not _is_authority():
+		return
+	if not _can_rescue(rescuer_pid, victim_pid):
+		_host_rescues.erase(rescuer_pid)
+		return
+	var hold: Dictionary = _host_rescues.get(rescuer_pid, {})
+	if hold.get("victim", -1) != victim_pid:
+		hold = {"victim": victim_pid, "elapsed": 0.0}
+	hold["fresh"] = 0.0
+	_host_rescues[rescuer_pid] = hold
+
+func _tick_rescue_holds(delta: float) -> void:
+	if not _is_authority() or phase != Phase.ROUND:
+		_host_rescues.clear()
+		return
+	for rescuer_pid: int in _host_rescues.keys():
+		var hold: Dictionary = _host_rescues[rescuer_pid]
+		hold["fresh"] += delta
+		if hold["fresh"] > 0.65 or not _can_rescue(rescuer_pid, hold["victim"]):
+			_host_rescues.erase(rescuer_pid)
+			continue
+		hold["elapsed"] += delta
+		if hold["elapsed"] >= rescue_time:
+			_authoritative_rescue(rescuer_pid, hold["victim"])
+			_host_rescues.erase(rescuer_pid)
+
+func _cancel_rescue_hold() -> void:
+	if _rescue_requested:
+		if _is_authority():
+			_host_rescues.erase(_my_id())
+		elif _net_connected():
+			_request_rescue.rpc_id(1, -1)
+	_rescue_requested = false
+	_rescue_pulse_cd = 0.0
+
+func _authoritative_rescue(rescuer_pid: int, victim_pid: int) -> bool:
+	var hold: Dictionary = _host_rescues.get(rescuer_pid, {})
+	if hold.get("victim", -1) != victim_pid or float(hold.get("elapsed", 0.0)) < rescue_time \
+			or not _can_rescue(rescuer_pid, victim_pid):
+		return false
+	_apply_rescue(victim_pid)
+	_credit_rescue(rescuer_pid)
+	if _net_connected():
+		_broadcast_ready("_net_rescued", [victim_pid])
+	return true
+
+func _can_rescue(rescuer_pid: int, victim_pid: int) -> bool:
+	if not _is_authority() or phase != Phase.ROUND or rescuer_pid == victim_pid:
+		return false
+	var rescuer: Node3D = _player if rescuer_pid == _my_id() else _remote_bags.get(rescuer_pid)
+	var victim: Node3D = _player if victim_pid == _my_id() else _remote_bags.get(victim_pid)
+	if not is_instance_valid(rescuer) or not is_instance_valid(victim):
+		return false
+	var rescuer_caught: bool = _player.state == SleepingBagPlayer.State.COCOONED if rescuer == _player else bool(rescuer.get_meta("cocooned", false))
+	var victim_caught: bool = _player.state == SleepingBagPlayer.State.COCOONED if victim == _player else bool(victim.get_meta("cocooned", false))
+	if rescuer_caught or not victim_caught or not rescuer.global_position.is_finite() \
+			or not victim.global_position.is_finite() or rescuer.global_position.distance_to(victim.global_position) > rescue_range:
+		return false
+	return true
 
 func _apply_rescue(victim_pid: int) -> void:
 	var my_id := _my_id()
@@ -2678,11 +3112,7 @@ func _apply_rescue(victim_pid: int) -> void:
 		print("[NETTEST] rescued (me)")
 	elif _remote_bags.has(victim_pid):
 		_remote_bags[victim_pid].set_meta("cocooned", false)
-
-## Rescues are performed locally by the rescuer, so the host is told who did it.
-@rpc("any_peer", "call_remote", "reliable")
-func _report_rescue(pid: int) -> void:
-	_credit_rescue(pid)
+	VoiceManager.set_muffled(victim_pid, false)
 
 func _credit_rescue(pid: int) -> void:
 	if _is_authority():
@@ -2701,35 +3131,42 @@ func _update_rescue(delta: float) -> void:
 				candidate_pid = pid
 				break
 	if candidate == null:
+		_cancel_rescue_hold()
 		_rescue_target = null
 		_rescue_t = 0.0
 		return
 
+	if _rescue_target != candidate:
+		_cancel_rescue_hold()
+		_rescue_t = 0.0
 	_rescue_target = candidate
 	# E is shared with objectives and lore. Only hold-to-rescue when the cocooned
 	# bag is the nearest thing E could act on, so a friend caught next to a keypad
 	# doesn't lock you out of the keypad (or vice versa).
 	if str(_interact_focus()["kind"]) != "rescue":
+		_cancel_rescue_hold()
 		_rescue_t = 0.0
 		return
 
 	if Input.is_key_pressed(KEY_E):
+		_rescue_pulse_cd -= delta
+		if _rescue_pulse_cd <= 0.0:
+			_rescue_pulse_cd = 0.2
+			_rescue_requested = true
+			if _is_authority():
+				_receive_rescue_hold(_my_id(), candidate_pid)
+			else:
+				_request_rescue.rpc_id(1, candidate_pid)
 		if _rescue_t == 0.0:
 			_rescue_zipped = false
 		_rescue_t += delta
-		_prompt_label.text = "UNZIPPING... %d%%" % int(_rescue_t / rescue_time * 100.0)
+		_prompt_label.text = "UNZIPPING... %d%%" % mini(100, int(_rescue_t / rescue_time * 100.0))
 		if not _rescue_zipped and _rescue_t >= rescue_zipper_at:
 			_rescue_zipped = true
 			_zip_sound.play()
 			NoiseBus.emit_noise(_player.global_position, zipper_loudness)  # LOUD
-		if _rescue_t >= rescue_time:
-			_rescue_t = 0.0
-			_apply_rescue(candidate_pid)
-			_credit_rescue(_my_id())        # I did the unzipping
-			if _net_connected():
-				_net_rescued.rpc(candidate_pid)
-				_report_rescue.rpc_id(1, _my_id())
 	else:
+		_cancel_rescue_hold()
 		_rescue_t = 0.0
 		_prompt_label.text = "HOLD E TO RESCUE"
 
@@ -2750,7 +3187,7 @@ func _on_hide_exited(body: Node3D) -> void:
 func _on_monster_woke() -> void:
 	_show_toast("...something in the attic just woke up.")
 	if _net_connected() and multiplayer.is_server():
-		_net_monster_woke.rpc()
+		_broadcast_ready("_net_monster_woke", [])
 
 @rpc("authority", "call_remote", "reliable")
 func _net_monster_woke() -> void:
@@ -2760,7 +3197,7 @@ func _net_monster_woke() -> void:
 func _on_monster_state_changed(s: int) -> void:
 	_apply_monster_fx(s)
 	if _net_connected() and multiplayer.is_server():
-		_net_monster_fx.rpc(s)
+		_broadcast_ready("_net_monster_fx", [s])
 
 @rpc("authority", "call_remote", "reliable")
 func _net_monster_fx(s: int) -> void:
@@ -2782,6 +3219,12 @@ func _show_toast(text: String, secs: float = 4.0) -> void:
 # ── Input ──────────────────────────────────────────────────────────────────
 
 func _unhandled_input(event: InputEvent) -> void:
+	if _menu_open:
+		return
+	if phase == Phase.RESULTS:
+		if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ENTER:
+			replay_round()
+		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		_yaw -= event.relative.x * mouse_sensitivity
 		# Looking UP is the whole point at this scale — she stands five times your
@@ -2810,12 +3253,12 @@ func _unhandled_input(event: InputEvent) -> void:
 					elif phase == Phase.RESULTS:
 						_apply_phase(Phase.LOBBY, {})
 						if _net_connected():
-							_net_phase.rpc(Phase.LOBBY, {})
+							_broadcast_ready("_net_phase", [Phase.LOBBY, {}])
 			KEY_R:
-				if (_is_authority()) and phase != Phase.LOBBY:
+				if OS.get_cmdline_user_args().has("--dev-controls") and _is_authority() and phase != Phase.LOBBY:
 					_apply_phase(Phase.LOBBY, {})
 					if _net_connected():
-						_net_phase.rpc(Phase.LOBBY, {})
+						_broadcast_ready("_net_phase", [Phase.LOBBY, {}])
 			KEY_E:
 				_try_interact_press()
 			KEY_M:
@@ -2971,6 +3414,7 @@ func _update_unzip(delta: float) -> void:
 # ── Frame loop ─────────────────────────────────────────────────────────────
 
 func _process(delta: float) -> void:
+	_tick_rescue_holds(delta)
 	_update_camera(delta)
 	_player.control_yaw = _yaw
 
@@ -2989,10 +3433,6 @@ func _process(delta: float) -> void:
 
 	_update_outro(delta)
 
-	var fwd: Vector3 = _player.facing
-	_aim.global_position = _player.global_position + fwd * 1.3 + Vector3.UP * 0.2
-	_aim.look_at(_aim.global_position + fwd, Vector3.UP)
-	_aim.rotate_object_local(Vector3.RIGHT, -PI / 2.0)
 
 	_state_label.text = _player.get_state_text()
 	for i in range(_pips.size()):
@@ -3002,8 +3442,9 @@ func _process(delta: float) -> void:
 
 	_prompt_label.text = ""
 	if phase == Phase.ROUND:
-		_update_rescue(delta)
-		_update_unzip(delta)
+		if not _menu_open:
+			_update_rescue(delta)
+			_update_unzip(delta)
 		_update_objectives(delta)
 		_update_prompts()
 		_update_tracker()
@@ -3025,8 +3466,10 @@ func _process(delta: float) -> void:
 func _update_objectives(delta: float) -> void:
 	var p := _player.global_position
 	for o: Objective in _objectives:
+		if o.def.kind == ObjectiveDef.Kind.DOG:
+			o._has_snack = _inv_has(Item.Kind.JERKY)
 		var near_count := _bodies_near(o.def.action_spot, Objective.NEAR)
-		o.update(delta, p, near_count)
+		o.update(delta, p, near_count, not _menu_open and _player.state != SleepingBagPlayer.State.COCOONED, _is_authority())
 	# The one open entry panel (phone / keypad / fuse box) drives the panel UI.
 	var entry := _active_entry()
 	if entry != null:
@@ -3037,10 +3480,10 @@ func _update_objectives(delta: float) -> void:
 
 func _bodies_near(pos: Vector3, r: float) -> int:
 	var n := 0
-	if _player.global_position.distance_to(pos) < r:
+	if _player.state != SleepingBagPlayer.State.COCOONED and _player.global_position.distance_to(pos) < r:
 		n += 1
 	for pid: int in _remote_bags:
-		if _remote_bags[pid].global_position.distance_to(pos) < r:
+		if not _remote_bags[pid].get_meta("cocooned", false) and _remote_bags[pid].global_position.distance_to(pos) < r:
 			n += 1
 	return n
 
@@ -3139,7 +3582,7 @@ func _update_phase(delta: float) -> void:
 			if is_authority and _phase_timer <= 0.0:
 				_apply_phase(Phase.ROUND, {})
 				if _net_connected():
-					_net_phase.rpc(Phase.ROUND, {})
+					_broadcast_ready("_net_phase", [Phase.ROUND, {}])
 		Phase.ROUND:
 			_round_elapsed += delta
 			if is_authority:
@@ -3148,7 +3591,7 @@ func _update_phase(delta: float) -> void:
 				_clock_accum += delta
 				if _clock_accum > 0.5 and _net_connected():
 					_clock_accum = 0.0
-					_net_clock.rpc(_phase_timer)
+					_broadcast_ready("_net_clock", [_phase_timer])
 				if _phase_timer <= 0.0:
 					_host_end_round("SUNRISE")
 				elif _all_cocooned():
@@ -3173,7 +3616,7 @@ func _all_cocooned() -> bool:
 	# data — so require a ghost to exist for every other player in the lobby.
 	var expected := 0
 	for pid: int in LobbyManager.players:
-		if pid != _my_id():
+		if pid != _my_id() and not _peer_is_spectator(pid):
 			expected += 1
 	if _remote_bags.size() < expected:
 		return false
@@ -3223,15 +3666,7 @@ func _ensure_inbag_bus() -> void:
 	# A muffled bus for everything you hear while zipped in: heavy breathing now,
 	# proximity voice later. A low-pass filter kills the highs so it sounds like
 	# it's coming through fabric.
-	if AudioServer.get_bus_index(INBAG_BUS) != -1:
-		return
-	var idx := AudioServer.get_bus_count()
-	AudioServer.add_bus(idx)
-	AudioServer.set_bus_name(idx, INBAG_BUS)
-	AudioServer.set_bus_send(idx, "Master")
-	var lp := AudioEffectLowPassFilter.new()
-	lp.cutoff_hz = 600.0  # muffled: only the low breathy body of the sound survives
-	AudioServer.add_bus_effect(idx, lp)
+	SoundKit.ensure_buses()
 
 ## Being caught used to mean staring at fabric-dark with zero information until
 ## someone happened to rescue you. It reads as "the round ended for me". Tell the
@@ -3316,6 +3751,9 @@ func _spectate_name() -> String:
 
 ## The bag you're watching, or null to watch yourself.
 func _spectate_target() -> Node3D:
+	if _late_spectator and not _remote_bags.has(_spectating):
+		var choices := _spectatable()
+		_spectating = choices[0] if not choices.is_empty() else -1
 	if _spectating == -1:
 		return null
 	# Vanished / gone home / you got rescued: fall back to your own view. A target
@@ -3411,7 +3849,15 @@ func _update_camera(delta: float) -> void:
 # ── Networking ─────────────────────────────────────────────────────────────
 
 func _lobby_size() -> int:
-	return (1 + multiplayer.get_peers().size()) if _net_connected() else 1
+	var count := 0 if _late_spectator else 1
+	if _net_connected():
+		for pid: int in multiplayer.get_peers():
+			if not _peer_is_spectator(pid):
+				count += 1
+	return maxi(count, 1)
+
+func _peer_is_spectator(pid: int) -> bool:
+	return bool(LobbyManager.players.get(pid, {}).get("spectator", false))
 
 func _net_connected() -> bool:
 	return multiplayer.has_multiplayer_peer() \
@@ -3432,20 +3878,76 @@ func _is_authority() -> bool:
 func _my_id() -> int:
 	return multiplayer.get_unique_id() if _peer_live() else 1
 
+func _on_local_landed() -> void:
+	if phase in [Phase.LIGHTS_OUT, Phase.ROUND] and _net_connected():
+		_broadcast_ready("_net_bag_landed", [])
+
+@rpc("any_peer", "call_remote", "unreliable")
+func _net_bag_landed() -> void:
+	_play_remote_landing(multiplayer.get_remote_sender_id())
+
+func _play_remote_landing(pid: int) -> bool:
+	if phase not in [Phase.LIGHTS_OUT, Phase.ROUND] or not _remote_bags.has(pid):
+		return false
+	var ghost: Node3D = _remote_bags[pid]
+	var now := Time.get_ticks_msec()
+	if bool(ghost.get_meta("cocooned", false)) or now - int(ghost.get_meta("last_landing_msec", -1000)) < 200:
+		return false
+	ghost.set_meta("last_landing_msec", now)
+	ghost.set_meta("step_cooldown", 0.2)
+	SoundKit.play_at(ghost, ghost.global_position, "thump", 16.0, -9.0, SoundKit.variation_pitch())
+	return true
+
+func _on_monster_footstep() -> void:
+	if _is_authority() and _net_connected():
+		_broadcast_ready("_net_monster_footstep", [])
+
+@rpc("authority", "call_remote", "unreliable")
+func _net_monster_footstep() -> void:
+	if phase == Phase.ROUND or phase == Phase.LIGHTS_OUT:
+		_monster.play_footstep()
+		if OS.get_cmdline_user_args().has("--enet-join"):
+			print("[NETTEST] monster footstep received")
+
 func _net_tick(delta: float) -> void:
 	var t := clampf(GHOST_LERP * delta, 0.0, 1.0)
+	if not _is_authority():
+		for objective: Objective in _objectives:
+			if is_instance_valid(objective._dog) and _dog_targets.has(objective.def.id):
+				objective._dog.global_position = objective._dog.global_position.lerp(_dog_targets[objective.def.id], t)
 	for pid: int in _remote_bags:
 		var ghost: Node3D = _remote_bags[pid]
 		var target: Array = _ghost_targets.get(pid, [])
 		if target.size() == 2:
+			var previous_position := ghost.global_position
 			ghost.global_position = ghost.global_position.lerp(target[0], t)
 			ghost.quaternion = ghost.quaternion.slerp(target[1], t)
+			var displacement := ghost.global_position - previous_position
+			var upright := ghost.global_basis.y.dot(Vector3.UP) > 0.85
+			var gait_active: bool = upright and not ghost.get_meta("cocooned", false) \
+				and absf(displacement.y) / maxf(delta, 0.001) < 0.9
+			BagVisual.animate_shuffle(ghost.get_child(0), Vector2(displacement.x, displacement.z).length(), gait_active, delta)
+			var moved := Vector2(displacement.x, displacement.z).length()
+			var step_distance: float = ghost.get_meta("step_distance", 0.0)
+			var step_cooldown: float = maxf(float(ghost.get_meta("step_cooldown", 0.0)) - delta, 0.0)
+			if gait_active and ghost.get_meta("grounded", false) and moved < 0.5 and moved / maxf(delta, 0.001) > 0.15:
+				step_distance += moved
+				if step_distance >= SoundKit.SHUFFLE_DISTANCE and step_cooldown <= 0.0:
+					SoundKit.play_at(ghost, ghost.global_position, "shuffle", 5.0, -18.0, SoundKit.variation_pitch() * 0.85)
+					step_distance = fmod(step_distance, SoundKit.SHUFFLE_DISTANCE)
+					step_cooldown = SoundKit.SHUFFLE_COOLDOWN
+			else:
+				step_distance = 0.0
+			ghost.set_meta("step_distance", step_distance)
+			ghost.set_meta("step_cooldown", step_cooldown)
 
 	if not _net_connected():
 		return
 
 	if not multiplayer.is_server() and _has_monster_target:
 		_monster.global_position = _monster.global_position.lerp(_monster_target, t)
+	if _late_spectator:
+		return
 
 	_net_accum += delta
 	if _net_accum < NET_SEND_INTERVAL:
@@ -3456,24 +3958,62 @@ func _net_tick(delta: float) -> void:
 		flags |= FLAG_COCOONED
 	if _player.hidden:
 		flags |= FLAG_HIDDEN
-	_net_bag_state.rpc(_player.global_position, _player.quaternion, flags, _player.tumbles, _player.eye_mood())
+	if _player.grounded and absf(_player.linear_velocity.y) < 0.9:
+		flags |= FLAG_GROUNDED
+	_broadcast_ready("_net_bag_state", [_player.global_position, _player.quaternion, flags, _player.tumbles, _player.eye_mood()])
 	if multiplayer.is_server():
-		_net_monster_state.rpc(_monster.global_position)
+		_broadcast_ready("_net_monster_state", [_monster.global_position])
+		for objective: Objective in _objectives:
+			if is_instance_valid(objective._dog) and not objective.done:
+				_broadcast_ready("_net_dog_state", [objective.def.id, objective._dog.global_position])
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _net_dog_state(id: String, at: Vector3) -> void:
+	if at.is_finite():
+		_dog_targets[id] = at
+
+func _on_dog_barked(at: Vector3, player_caused: bool = false) -> void:
+	if not _is_authority() or phase != Phase.ROUND:
+		return
+	if not player_caused:
+		# The house can make noise without adding to a player's award score.
+		_relaying_remote_noise = true
+		NoiseBus.emit_noise(at, 0.7)
+		_relaying_remote_noise = false
+	_net_dog_bark(at)
+	_broadcast_ready("_net_dog_bark", [at])
+
+@rpc("authority", "call_remote", "reliable")
+func _net_dog_bark(at: Vector3) -> void:
+	SoundKit.play_at(self, at, "bark", 16.0, -12.0, SoundKit.variation_pitch())
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
 func _net_bag_state(pos: Vector3, rot: Quaternion, flags: int, tumbles: int, mood: int) -> void:
 	var pid := multiplayer.get_remote_sender_id()
+	if pid <= 0 or not multiplayer.get_peers().has(pid):
+		return
+	_apply_remote_bag_state(pid, pos, rot, flags, tumbles, mood)
+
+func _apply_remote_bag_state(pid: int, pos: Vector3, rot: Quaternion, flags: int, tumbles: int, mood: int) -> bool:
+	if _peer_is_spectator(pid):
+		return false
+	# Reject invalid network values before they reach interpolation or physics.
+	if pid <= 0 or not pos.is_finite() or not rot.is_finite():
+		return false
+	var rotation_length := rot.length_squared()
+	if rotation_length < 0.5 or rotation_length > 1.5 or pos.length_squared() > 1000000.0:
+		return false
 	if not _remote_bags.has(pid):
 		_spawn_remote_bag(pid)
-	_ghost_targets[pid] = [pos, rot]
+	_ghost_targets[pid] = [pos, rot.normalized()]
 	_ghost_mood[pid] = mood
 	var ghost: Node3D = _remote_bags[pid]
-	var now_cocooned := flags & FLAG_COCOONED != 0
-	if now_cocooned != bool(ghost.get_meta("cocooned", false)):
-		VoiceManager.set_muffled(pid, now_cocooned)  # voice through fabric
-	ghost.set_meta("cocooned", now_cocooned)
+	# Reliable host capture/rescue events own cocoon state on every peer.
+	# Unreliable movement can arrive late after a rescue and must not re-capture.
 	ghost.set_meta("hidden", flags & FLAG_HIDDEN != 0)
-	ghost.set_meta("tumbles", tumbles)
+	ghost.set_meta("grounded", flags & FLAG_GROUNDED != 0)
+	ghost.set_meta("tumbles", clampi(tumbles, 0, 1000000))
+	return true
 
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _net_monster_state(pos: Vector3) -> void:
@@ -3485,11 +4025,23 @@ func _net_monster_state(pos: Vector3) -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func _net_noise(pos: Vector3, loudness: float) -> void:
 	var from := multiplayer.get_remote_sender_id()
+	_receive_remote_noise(from, pos, loudness)
+
+func _receive_remote_noise(from: int, pos: Vector3, loudness: float) -> bool:
+	if not _is_authority() or phase != Phase.ROUND or not _remote_bags.has(from) \
+			or not pos.is_finite() or pos.length_squared() > 1000000.0 \
+			or not is_finite(loudness) or loudness <= 0.0 or loudness > 1.0:
+		return false
 	print("[NETTEST] noise received from peer %d" % from)
 	_credit_noise(from, loudness)
+	_relaying_remote_noise = true
 	NoiseBus.emit_noise(pos, loudness)
+	_relaying_remote_noise = false
+	return true
 
 func _on_local_noise(pos: Vector3, loudness: float) -> void:
+	if _relaying_remote_noise:
+		return
 	_credit_noise(_my_id(), loudness)   # host counts its own racket too
 	if _net_connected() and not multiplayer.is_server():
 		_net_noise.rpc_id(1, pos, loudness)
@@ -3560,6 +4112,17 @@ func _probe_basement_nav() -> void:
 
 var _acked_peers: Array[int] = []
 
+func _broadcast_ready(method: String, args: Array = []) -> void:
+	if not _net_connected():
+		return
+	for pid: int in _acked_peers:
+		if pid != _my_id() and multiplayer.get_peers().has(pid):
+			callv("rpc_id", [pid, method] + args)
+
+@rpc("authority", "call_remote", "reliable")
+func _net_ready_peers(peers: Array) -> void:
+	_acked_peers.assign(peers)
+
 func _await_clients_then_start() -> void:
 	_acked_peers = [_my_id()]
 	# Fallback: start anyway after 5s in case an ack is lost.
@@ -3574,17 +4137,95 @@ func _ack_loaded() -> void:
 	if not _is_authority():
 		return
 	var pid := multiplayer.get_remote_sender_id()
+	if pid <= 1 or not multiplayer.get_peers().has(pid):
+		return
 	if not _acked_peers.has(pid):
 		_acked_peers.append(pid)
+	_broadcast_ready("_net_ready_peers", [_acked_peers])
+	if phase != Phase.LOBBY:
+		_net_round_snapshot.rpc_id(pid, _make_round_snapshot())
+		return
 	# Everyone (host + all connected peers) is in — begin the night.
 	if _acked_peers.size() >= multiplayer.get_peers().size() + 1 and phase == Phase.LOBBY:
 		_host_start_round()
 
+func _make_round_snapshot() -> Dictionary:
+	var items: Array = []
+	for item: Item in _items:
+		if not item.taken:
+			items.append({"uid": item.uid, "kind": item.kind, "at": item.global_position})
+	var revealed: Array[String] = []
+	var dogs: Dictionary = {}
+	for objective: Objective in _objectives:
+		if objective.is_revealed():
+			revealed.append(objective.def.id)
+		if is_instance_valid(objective._dog):
+			dogs[objective.def.id] = objective._dog.global_position
+	var bags: Dictionary = {}
+	bags[_my_id()] = {"at": _player.global_position, "rot": _player.quaternion,
+		"caught": _player.state == SleepingBagPlayer.State.COCOONED}
+	for pid: int in _remote_bags:
+		if not _peer_is_spectator(pid):
+			var bag: Node3D = _remote_bags[pid]
+			bags[pid] = {"at": bag.global_position, "rot": bag.quaternion, "caught": bag.get_meta("cocooned", false)}
+	return {"setup": _round_setup, "phase": phase, "timer": _phase_timer,
+		"elapsed": _round_elapsed, "items": items, "done": _done_ids,
+		"revealed": revealed, "dogs": dogs, "collected": _frag_collected_ids,
+		"armed": _escape_armed, "keys_open": _keys_door_open, "bags": bags,
+		"monster": _monster.global_position, "results": _results_data}
+
+@rpc("authority", "call_remote", "reliable")
+func _net_round_snapshot(snapshot: Dictionary) -> void:
+	var setup: Dictionary = snapshot["setup"].duplicate(true)
+	setup["items"] = snapshot["items"]
+	_apply_phase(Phase.LIGHTS_OUT, setup)
+	for id: String in snapshot["done"]:
+		_mark_objective_done(id)
+	for id: String in snapshot["revealed"]:
+		_apply_reveal(id)
+	for id: String in snapshot["collected"]:
+		var fragment := _fragment_by_id(id)
+		if fragment != null:
+			fragment.mark_collected()
+		if not _frag_collected_ids.has(id):
+			_frag_collected_ids.append(id)
+	for objective: Objective in _objectives:
+		if snapshot["dogs"].has(objective.def.id) and is_instance_valid(objective._dog):
+			objective._dog.global_position = snapshot["dogs"][objective.def.id]
+	_escape_armed = snapshot["armed"]
+	_keys_door_open = snapshot["keys_open"]
+	_refresh_exit_doors()
+	for pid: int in snapshot["bags"]:
+		if pid == _my_id():
+			continue
+		var entry: Dictionary = snapshot["bags"][pid]
+		_apply_remote_bag_state(pid, entry["at"], entry["rot"], 0, 0, 0)
+		if _remote_bags.has(pid):
+			_remote_bags[pid].global_position = entry["at"]
+			_remote_bags[pid].set_meta("cocooned", entry["caught"])
+			VoiceManager.set_muffled(pid, entry["caught"])
+	var current_phase: int = snapshot["phase"]
+	if current_phase != Phase.LIGHTS_OUT:
+		_apply_phase(current_phase as Phase, snapshot["results"] if current_phase == Phase.RESULTS else {})
+	_phase_timer = snapshot["timer"]
+	_round_elapsed = snapshot["elapsed"]
+	_monster.global_position = snapshot["monster"]
+	_monster_target = snapshot["monster"]
+	_has_monster_target = true
+	_update_tracker()
+
 func _become_spectator() -> void:
 	# Joined after START: watch, don't play. Bag is hidden and inert.
+	_late_spectator = true
+	_player.state = SleepingBagPlayer.State.COCOONED
+	_player.freeze = true
+	_player.collision_layer = 0
+	_player.collision_mask = 0
+	_player.set_controls_enabled(false)
 	_player.set_physics_process(false)
 	_player.visible = false
-	_show_toast("SPECTATING — you joined mid-round.", 6.0)
+	_cocoon_overlay.visible = false
+	_show_toast("SPECTATING — [ ] switch players. You'll join the next night.", 6.0)
 
 func _start_bot_harness() -> void:
 	# ENet loopback test: ping + wander like a player (silent while cocooned).
@@ -3606,13 +4247,17 @@ func _start_bot_harness() -> void:
 	add_child(wander)
 
 func _on_peer_disconnected(pid: int) -> void:
+	_acked_peers.erase(pid)
 	VoiceManager.unregister_player(pid)
 	if _remote_bags.has(pid):
+		if _is_authority() and phase == Phase.ROUND:
+			_drop_peer_inventory(pid, _remote_bags[pid].global_position)
 		_remote_bags[pid].queue_free()
 		_remote_bags.erase(pid)
 		_ghost_targets.erase(pid)
 		_ghost_eyes.erase(pid)
 		_ghost_mood.erase(pid)
+	_remote_inventory.erase(pid)
 	_update_net_label()
 
 func _spawn_remote_bag(pid: int) -> Node3D:

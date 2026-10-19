@@ -35,6 +35,10 @@ var seen_outro: bool = false
 # have to re-pick every launch is a mic mode you'll end up hating.
 var voice_enabled: bool = true
 var voice_open_mic: bool = false    ## false = push-to-talk
+var mouse_sensitivity: float = 0.004
+var master_volume: float = 1.0
+var effects_volume: float = 1.0
+var voice_volume: float = 1.0
 # Career totals — the recap's "identity investment" hook: a number that only goes up
 # is what makes "run it back" stick.
 var career_rounds: int = 0
@@ -146,6 +150,10 @@ func _to_dict() -> Dictionary:
 		"seen_outro": seen_outro,
 		"voice_enabled": voice_enabled,
 		"voice_open_mic": voice_open_mic,
+		"mouse_sensitivity": mouse_sensitivity,
+		"master_volume": master_volume,
+		"effects_volume": effects_volume,
+		"voice_volume": voice_volume,
 		"career_rounds": career_rounds,
 		"career_tumbles": career_tumbles,
 		"career_rescues": career_rescues,
@@ -154,43 +162,102 @@ func _to_dict() -> Dictionary:
 
 func _from_dict(d: Dictionary) -> void:
 	collected.clear()
-	for id: Variant in d.get("collected", []):
-		if id is String and not collected.has(id):
-			collected.append(id)
-	selected_skin = int(d.get("selected_skin", 0))
-	seen_intro = bool(d.get("seen_intro", false))
-	seen_outro = bool(d.get("seen_outro", false))
-	voice_enabled = bool(d.get("voice_enabled", true))
-	voice_open_mic = bool(d.get("voice_open_mic", false))
-	career_rounds = int(d.get("career_rounds", 0))
-	career_tumbles = int(d.get("career_tumbles", 0))
-	career_rescues = int(d.get("career_rescues", 0))
-	career_fragments = int(d.get("career_fragments", 0))
+	var entries: Variant = d.get("collected", [])
+	if entries is Array:
+		for id: Variant in entries:
+			if id is String and not LoreFragments.by_id(id).is_empty() and not collected.has(id):
+				collected.append(id)
+	selected_skin = _read_count(d, "selected_skin")
+	if not is_skin_unlocked(selected_skin):
+		selected_skin = 0
+	seen_intro = _read_bool(d, "seen_intro", false)
+	seen_outro = _read_bool(d, "seen_outro", false)
+	voice_enabled = _read_bool(d, "voice_enabled", true)
+	voice_open_mic = _read_bool(d, "voice_open_mic", false)
+	mouse_sensitivity = _read_number(d, "mouse_sensitivity", 0.004, 0.001, 0.01)
+	master_volume = _read_number(d, "master_volume", 1.0, 0.0, 1.0)
+	effects_volume = _read_number(d, "effects_volume", 1.0, 0.0, 1.0)
+	voice_volume = _read_number(d, "voice_volume", 1.0, 0.0, 1.0)
+	career_rounds = _read_count(d, "career_rounds")
+	career_tumbles = _read_count(d, "career_tumbles")
+	career_rescues = _read_count(d, "career_rescues")
+	career_fragments = _read_count(d, "career_fragments")
+
+func _read_count(d: Dictionary, key: String) -> int:
+	var value: Variant = d.get(key, 0)
+	if (value is int or value is float) and is_finite(float(value)):
+		return int(clampf(float(value), 0.0, 2147483647.0))
+	return 0
+
+func _read_number(d: Dictionary, key: String, fallback: float, low: float, high: float) -> float:
+	var value: Variant = d.get(key, fallback)
+	if (value is int or value is float) and is_finite(float(value)):
+		return clampf(float(value), low, high)
+	return fallback
+
+func _read_bool(d: Dictionary, key: String, fallback: bool) -> bool:
+	var value: Variant = d.get(key, fallback)
+	return value if value is bool else fallback
 
 func save_game() -> void:
 	var bytes := JSON.stringify(_to_dict()).to_utf8_buffer()
-	var f := FileAccess.open(save_path(), FileAccess.WRITE)
-	if f != null:
-		f.store_buffer(bytes)
-		f.close()
+	# Write alongside the destination, then replace it only after a complete write.
+	# A failed open/write must not truncate the last good save or update the cloud.
+	var temporary := save_path() + ".tmp"
+	var f := FileAccess.open(temporary, FileAccess.WRITE)
+	if f == null:
+		push_warning("Scrapbook: cannot open save (%s)" % FileAccess.get_open_error())
+		return
+	f.store_buffer(bytes)
+	f.flush()
+	var write_error := f.get_error()
+	f.close()
+	if write_error != OK:
+		push_warning("Scrapbook: write failed (%s)" % write_error)
+		return
+	# Never replace a good backup with a damaged primary file.
+	if _read_local_save(save_path()) is Dictionary:
+		var backup_temp := ProjectSettings.globalize_path(save_path() + ".bak.tmp")
+		var backup_error := DirAccess.copy_absolute(ProjectSettings.globalize_path(save_path()), backup_temp)
+		if backup_error == OK:
+			backup_error = DirAccess.rename_absolute(backup_temp, ProjectSettings.globalize_path(save_path() + ".bak"))
+		if backup_error != OK:
+			push_warning("Scrapbook: backup failed; keeping previous save (%s)" % backup_error)
+			return
+	var rename_error := DirAccess.rename_absolute(ProjectSettings.globalize_path(temporary), ProjectSettings.globalize_path(save_path()))
+	if rename_error != OK:
+		push_warning("Scrapbook: save replacement failed (%s)" % rename_error)
+		return
 	if _path_override == "":   # never sync test data to the cloud
 		_cloud_write(bytes)
 
 func load_game() -> void:
-	# Prefer local; fall back to the Steam Cloud copy (fresh machine, same account).
-	var bytes := PackedByteArray()
-	if FileAccess.file_exists(save_path()):
-		var f := FileAccess.open(save_path(), FileAccess.READ)
-		if f != null:
-			bytes = f.get_buffer(f.get_length())
-			f.close()
-	if bytes.is_empty() and _path_override == "":
-		bytes = _cloud_read()
-	if bytes.is_empty():
+	for path: String in [save_path(), save_path() + ".bak"]:
+		var local: Variant = _read_local_save(path)
+		if local is Dictionary:
+			_from_dict(local)
+			if path.ends_with(".bak"):
+				push_warning("Scrapbook: recovered the previous save from backup.")
+			return
+	if _path_override != "":
 		return
-	var parsed: Variant = JSON.parse_string(bytes.get_string_from_utf8())
+	var bytes := _cloud_read()
+	var parsed: Variant = JSON.parse_string(bytes.get_string_from_utf8()) if not bytes.is_empty() else null
 	if parsed is Dictionary:
 		_from_dict(parsed)
+
+func _read_local_save(path: String) -> Variant:
+	if not FileAccess.file_exists(path):
+		return null
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return null
+	var text := file.get_as_text()
+	file.close()
+	var parser := JSON.new()
+	if parser.parse(text) != OK or not parser.data is Dictionary:
+		return null
+	return parser.data
 
 # ── Steam Cloud (Remote Storage) — no-ops without Steam ────────────────────
 

@@ -5,6 +5,7 @@ extends Node
 ## never change_scene (which would reset the SceneTree multiplayer peer).
 
 const GAME_SCENE := preload("res://games/sleepover/Main.tscn")
+const MENU_BACKDROP := preload("res://core/ui/MenuBackdrop.gd")
 
 enum State { MENU, LOBBY, GAME }
 
@@ -29,6 +30,12 @@ var _scrapbook: Control
 var _scrapbook_content: VBoxContainer
 var _scrapbook_count: Label
 var _skin_row: HBoxContainer
+var _how_to: Control
+var _credits: Control
+var _backdrop: Control
+var _menu_audio: AudioStreamPlayer
+var _sound_preview: AudioStreamPlayer
+var _last_focus_sound: int = -1000
 
 func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
@@ -39,6 +46,7 @@ func _ready() -> void:
 	LobbyManager.roster_changed.connect(_refresh_roster)
 	LobbyManager.game_started.connect(_on_game_started)
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
+	multiplayer.connection_failed.connect(_on_connection_failed)
 
 	_build_ui()
 
@@ -59,6 +67,13 @@ func _ready() -> void:
 # ── UI construction (gray-box) ─────────────────────────────────────────────
 
 func _build_ui() -> void:
+	_menu_audio = AudioStreamPlayer.new()
+	_menu_audio.bus = SoundKit.EFFECTS_BUS
+	_menu_audio.max_polyphony = 2
+	add_child(_menu_audio)
+	_sound_preview = AudioStreamPlayer.new()
+	_sound_preview.bus = SoundKit.EFFECTS_BUS
+	add_child(_sound_preview)
 	_ui_layer = CanvasLayer.new()
 	# Above the game's own HUD layer, which is added later and would otherwise
 	# draw on top of the pause menu.
@@ -73,33 +88,47 @@ func _build_ui() -> void:
 	_menu_bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_menu_bg.color = Color(0.05, 0.05, 0.08)
 	_ui_layer.add_child(_menu_bg)
+	_backdrop = MENU_BACKDROP.new()
+	_backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_ui_layer.add_child(_backdrop)
 
 	_menu = _build_menu()
 	_ui_layer.add_child(_menu)
 	_lobby = _build_lobby()
 	_ui_layer.add_child(_lobby)
 	_settings = _build_settings()
+	_settings.visibility_changed.connect(func() -> void:
+		if not _settings.visible: _sound_preview.stop())
+	_settings.z_index = 20  # settings must cover the pause panel as well as the menu
 	_ui_layer.add_child(_settings)
 	_pause = _build_pause()
 	_ui_layer.add_child(_pause)
 	_scrapbook = _build_scrapbook()
 	_ui_layer.add_child(_scrapbook)
+	_how_to = _build_how_to()
+	_ui_layer.add_child(_how_to)
+	_credits = _build_credits()
+	_ui_layer.add_child(_credits)
 	Scrapbook.changed.connect(func() -> void:
 		if _scrapbook.visible:
 			_refresh_scrapbook())
 
 func _build_menu() -> Control:
 	var root := VBoxContainer.new()
-	root.set_anchors_preset(Control.PRESET_CENTER)
-	root.position = Vector2(-160, -170)
-	root.custom_minimum_size = Vector2(320, 340)
-	root.add_theme_constant_override("separation", 12)
+	root.set_anchors_preset(Control.PRESET_CENTER_LEFT)
+	root.position = Vector2(64, -280)
+	root.custom_minimum_size = Vector2(340, 460)
+	root.add_theme_constant_override("separation", 8)
 
 	var title := Label.new()
 	title.text = "SLEEPOVER"
-	title.add_theme_font_size_override("font_size", 44)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 48)
+	title.add_theme_color_override("font_color", Color("eedfc3"))
 	root.add_child(title)
+	var invitation := _label("BRING A SLEEPING BAG.\nDON'T WAKE THE HOUSESITTER.")
+	invitation.add_theme_color_override("font_color", Color("c3ad8b"))
+	root.add_child(invitation)
 
 	var host_b := _button("HOST GAME", func() -> void: SteamManager.host_lobby())
 	root.add_child(host_b)
@@ -117,7 +146,15 @@ func _build_menu() -> Control:
 			_menu_status.text = "enter the 6-character code first"))
 
 	root.add_child(_button("SCRAPBOOK", func() -> void: _open_scrapbook()))
-	root.add_child(_button("SETTINGS", func() -> void: _settings.visible = true))
+	root.add_child(_button("HOW TO PLAY", func() -> void: _how_to.visible = true))
+	var extras := HBoxContainer.new()
+	for entry: String in ["SETTINGS", "CREDITS"]:
+		var button := _button(entry, func() -> void:
+			if entry == "SETTINGS": _settings.visible = true
+			else: _credits.visible = true)
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		extras.add_child(button)
+	root.add_child(extras)
 	root.add_child(_button("QUIT", func() -> void: get_tree().quit()))
 
 	_menu_status = Label.new()
@@ -152,12 +189,7 @@ func _build_lobby() -> Control:
 	_roster_box.custom_minimum_size = Vector2(0, 180)
 	root.add_child(_roster_box)
 
-	# Host-only stub controls (wired later).
-	var host_row := HBoxContainer.new()
-	host_row.add_child(_stub_option("Map", ["Maple St. House"]))
-	host_row.add_child(_stub_option("Monster", ["AI", "Secret Player"]))
-	host_row.add_child(_stub_option("House Rules", ["None", "Blackout", "Sugar High"]))
-	root.add_child(host_row)
+	root.add_child(_label("MAPLE ST. HOUSE  /  THE HOUSESITTER\nFinish any 3 tasks, then reach an unlocked exit.\nOr stay alive until sunrise. Stay close enough to help."))
 
 	var btns := HBoxContainer.new()
 	btns.add_theme_constant_override("separation", 10)
@@ -172,17 +204,96 @@ func _build_lobby() -> Control:
 	# Voice/mic settings belong here too — the lobby is where you sort your mic out
 	# before a round, not the main menu you already walked past.
 	root.add_child(_button("SETTINGS", func() -> void: _settings.visible = true))
+	root.add_child(_button("HOW TO PLAY", func() -> void: _how_to.visible = true))
 	return root
 
-func _build_settings() -> Control:
-	var panel := PanelContainer.new()
-	panel.set_anchors_preset(Control.PRESET_CENTER)
-	panel.position = Vector2(-190, -160)
-	panel.custom_minimum_size = Vector2(380, 320)
-	panel.visible = false
+func _build_how_to() -> Control:
+	var root := PanelContainer.new()
+	_style_reading_panel(root)
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.visible = false
+	var margin := MarginContainer.new()
+	for side: String in ["left", "right", "top", "bottom"]:
+		margin.add_theme_constant_override("margin_" + side, 40)
+	root.add_child(margin)
 	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 18)
+	margin.add_child(box)
+	var title := _label("THE SLEEPOVER RULES")
+	title.add_theme_font_size_override("font_size", 32)
+	box.add_child(title)
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	box.add_child(scroll)
+	var rules := _label("GET HOME\nComplete any 3 of the 5 tasks to enable escape. A door also needs its own task completed. The back door needs the house keys turned in its lock. Survive until sunrise for another way to win.\n\nMOVE QUIETLY\nWASD shuffles. Space hops: faster, louder, and costs one stamina pip. Hopping empty makes you fall. Mash WASD to wriggle upright; rest on the ground to recover stamina.\n\nLOOK AND INTERACT\nMouse looks around. C switches camera. Hold E at clues and items to unzip and grab them. Follow the nearby prompt at tasks. Number keys enter codes when a keypad is open.\n\nPACK LIGHT\nYou have two inventory slots. Press 1 or 2 to use an item. A thrown can makes noise when it lands; a party popper buys a short chance to run. Getting caught spills your items for a friend to recover.\n\nTRADE WITH THE DOG\nFind the beef jerky and hold E to pick it up. Carry it to the dog, then press E or its inventory number to trade it for the keys. Carry the keys to the back door and press their number to turn the lock. Using jerky or keys away from their destination sets them down for a teammate.\n\nDON'T LEAVE A FRIEND\nHold E beside a cocooned friend to rescue them. The zipper is loud. If you are caught, F toggles spectating and [ / ] changes teammate. Everyone caught ends the night.\n\nTALK / TAKE A BREAK\nHold V to talk. M toggles open mic. Escape opens the menu, but the house keeps moving. Finishing a night opens the recap; the host can choose One More Night.")
+	rules.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	rules.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(rules)
+	box.add_child(_button("GOT IT", func() -> void: _how_to.visible = false))
+	return root
+
+func _build_credits() -> Control:
+	var root := PanelContainer.new()
+	_style_reading_panel(root)
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.visible = false
+	var margin := MarginContainer.new()
+	for side: String in ["left", "right", "top", "bottom"]:
+		margin.add_theme_constant_override("margin_" + side, 40)
+	root.add_child(margin)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 18)
+	margin.add_child(box)
+	var heading := _label("THANKS FOR STAYING OVER")
+	heading.add_theme_font_size_override("font_size", 32)
+	box.add_child(heading)
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	box.add_child(scroll)
+	var credits := _label("SOUND RECORDINGS\n\nKenney — Impact Sounds, Interface Sounds, RPG Audio\nCloth, creaks, impacts, page turns and menu sounds.\nkenney.nl\n\nAntumDeluge — Zipper\nopengameart.org/content/zipper\n\nmikeask — Breathing Tired\nopengameart.org/content/breathing-tired\n\nBrandon Morris (HaelDB) — Dog barking mono\nopengameart.org/content/dog-barking-mono\n\nThese sound assets are released under Creative Commons Zero (CC0).\ncreativecommons.org/publicdomain/zero/1.0/\n\nBUILT WITH\nGodot Engine and GodotSteam\n\ngodotengine.org  /  godotsteam.com")
+	credits.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	credits.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(credits)
+	box.add_child(_button("BACK", func() -> void: _credits.visible = false))
+	return root
+
+func _style_reading_panel(panel: PanelContainer) -> void:
+	var paper := StyleBoxFlat.new()
+	paper.bg_color = Color("1b2229")
+	paper.border_color = Color("9d8060")
+	paper.set_border_width_all(2)
+	panel.add_theme_stylebox_override("panel", paper)
+	panel.add_theme_color_override("font_color", Color("eedfc3"))
+
+func _build_settings() -> Control:
+	var overlay := Control.new()
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.visible = false
+	var dim := ColorRect.new()
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.color = Color(0.02, 0.03, 0.04, 0.85)
+	overlay.add_child(dim)
+	var panel := PanelContainer.new()
+	_style_reading_panel(panel)
+	panel.set_anchors_preset(Control.PRESET_CENTER)
+	panel.position = Vector2(-240, -285)
+	panel.custom_minimum_size = Vector2(480, 570)
+	overlay.add_child(panel)
+	var margin := MarginContainer.new()
+	for side: String in ["left", "right", "top", "bottom"]:
+		margin.add_theme_constant_override("margin_" + side, 20)
+	panel.add_child(margin)
+	var settings_layout := VBoxContainer.new()
+	settings_layout.add_theme_constant_override("separation", 12)
+	margin.add_child(settings_layout)
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	settings_layout.add_child(scroll)
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	box.add_theme_constant_override("separation", 10)
-	panel.add_child(box)
+	scroll.add_child(box)
 
 	var t := Label.new()
 	t.text = "SETTINGS"
@@ -195,25 +306,44 @@ func _build_settings() -> Control:
 	vol.min_value = 0.0
 	vol.max_value = 1.0
 	vol.step = 0.01
-	vol.value = db_to_linear(AudioServer.get_bus_volume_db(0))
+	vol.value = Scrapbook.master_volume
+	_apply_audio_mix()
 	vol.custom_minimum_size = Vector2(320, 0)
 	vol.value_changed.connect(func(v: float) -> void:
-		AudioServer.set_bus_volume_db(0, linear_to_db(maxf(v, 0.0001))))
+		Scrapbook.master_volume = v
+		_apply_audio_mix())
 	box.add_child(vol)
+	for setting: String in ["effects_volume", "voice_volume"]:
+		box.add_child(_label("Sound effects" if setting == "effects_volume" else "Voice volume (incoming)"))
+		var slider := HSlider.new()
+		slider.name = setting
+		slider.min_value = 0.0
+		slider.max_value = 1.0
+		slider.step = 0.01
+		slider.value = Scrapbook.get(setting)
+		slider.custom_minimum_size = Vector2(320, 0)
+		var preference := setting
+		slider.value_changed.connect(func(v: float) -> void:
+			Scrapbook.set(preference, v)
+			_apply_audio_mix())
+		box.add_child(slider)
 
-	# Mouse sensitivity — stub value stored globally for the game to read later.
-	box.add_child(_label("Mouse sensitivity  (stub)"))
+	box.add_child(_label("Mouse sensitivity"))
 	var sens := HSlider.new()
 	sens.min_value = 0.001
 	sens.max_value = 0.01
 	sens.step = 0.0005
-	sens.value = 0.004
+	sens.value = Scrapbook.mouse_sensitivity
 	sens.custom_minimum_size = Vector2(320, 0)
+	sens.value_changed.connect(func(v: float) -> void:
+		Scrapbook.mouse_sensitivity = v
+		if is_instance_valid(_game):
+			_game.mouse_sensitivity = v)
 	box.add_child(sens)
 
 	# Voice chat — Steam voice API captures from the SYSTEM DEFAULT input device
 	# (the Steam API has no per-device selection), so no misleading dropdown.
-	box.add_child(_label("Voice chat  (Steam mic — system default device)"))
+	box.add_child(_label("Voice chat — system default microphone"))
 	var voice_on := CheckButton.new()
 	voice_on.text = "Voice chat enabled"
 	voice_on.button_pressed = VoiceManager.enabled
@@ -229,9 +359,32 @@ func _build_settings() -> Control:
 		open_mic.set_pressed_no_signal(v)
 		voice_on.set_pressed_no_signal(VoiceManager.enabled))
 
-	box.add_child(_label("Key rebinds — coming soon"))
-	box.add_child(_button("BACK", func() -> void: _settings.visible = false))
-	return panel
+	box.add_child(_label("Sound check"))
+	var sound_row := HBoxContainer.new()
+	var sound_choice := OptionButton.new()
+	var sound_kinds := ["shuffle", "zipper", "breath", "creak", "can_land", "page", "bark"]
+	for title: String in ["Bag shuffle", "Zipper", "Breathing", "House creak", "Can impact", "Page turn", "Dog bark"]:
+		sound_choice.add_item(title)
+	sound_choice.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sound_row.add_child(sound_choice)
+	sound_row.add_child(_button("PLAY", func() -> void: _preview_sound(sound_kinds[sound_choice.selected])))
+	sound_row.add_child(_button("STOP", func() -> void: _sound_preview.stop()))
+	box.add_child(sound_row)
+	settings_layout.add_child(_button("BACK", func() -> void:
+		Scrapbook.save_game()
+		_settings.visible = false))
+	return overlay
+
+func _preview_sound(kind: String) -> void:
+	_sound_preview.stop()
+	_sound_preview.stream = SoundKit.get_stream(kind)
+	_sound_preview.bus = "InBag" if kind == "breath" else SoundKit.EFFECTS_BUS
+	_sound_preview.volume_db = -12.0 if kind == "breath" else -18.0
+	_sound_preview.pitch_scale = 0.85 if kind == "shuffle" else 1.0
+	_sound_preview.play()
+
+func _apply_audio_mix() -> void:
+	SoundKit.apply_mix(Scrapbook.master_volume, Scrapbook.effects_volume, Scrapbook.voice_volume)
 
 # ── Pause ──────────────────────────────────────────────────────────────────
 
@@ -276,6 +429,19 @@ func _build_pause() -> Control:
 	return root
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE and _credits.visible:
+		_credits.visible = false
+		get_viewport().set_input_as_handled()
+		return
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE and _settings.visible:
+		Scrapbook.save_game()
+		_settings.visible = false
+		get_viewport().set_input_as_handled()
+		return
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE and _how_to.visible:
+		_how_to.visible = false
+		get_viewport().set_input_as_handled()
+		return
 	if _state != State.GAME:
 		return
 	if event is InputEventKey and event.pressed and not event.echo \
@@ -283,17 +449,23 @@ func _input(event: InputEvent) -> void:
 		# Handled HERE, not in Main: consume it so the game below never sees it.
 		# Settings sits on top of pause, so Esc backs out of that first.
 		if _settings.visible:
+			Scrapbook.save_game()
 			_settings.visible = false
 		else:
 			_set_paused(not _pause.visible)
 		get_viewport().set_input_as_handled()
 
 func _set_paused(on: bool) -> void:
+	if not on and _settings.visible:
+		Scrapbook.save_game()
 	_pause.visible = on
 	if not on:
 		_settings.visible = false
 	# Releasing the mouse IS the pause, as far as the player is concerned.
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if on else Input.MOUSE_MODE_CAPTURED
+	if is_instance_valid(_game):
+		_game.set_menu_open(on)
+	var results: bool = is_instance_valid(_game) and _game.phase == _game.Phase.RESULTS
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if on or results else Input.MOUSE_MODE_CAPTURED
 
 # ── The Scrapbook (lore + cosmetic unlocks) ────────────────────────────────
 
@@ -337,6 +509,8 @@ func _build_scrapbook() -> Control:
 	return panel
 
 func _open_scrapbook() -> void:
+	if _settings.visible:
+		Scrapbook.save_game()
 	_settings.visible = false
 	_refresh_scrapbook()
 	_scrapbook.visible = true
@@ -407,11 +581,18 @@ func _refresh_skins() -> void:
 # ── Flow ───────────────────────────────────────────────────────────────────
 
 func _show(s: State) -> void:
+	if s == State.GAME and _settings and _settings.visible:
+		Scrapbook.save_game()
 	_state = s
 	# Only the opaque BACKGROUND is state-dependent — the layer itself stays up so
 	# the pause menu can overlay the live 3D world. The game draws its HUD on its
 	# own CanvasLayer, below this one.
 	_menu_bg.visible = s != State.GAME
+	_backdrop.visible = s == State.MENU
+	if _how_to:
+		_how_to.visible = false
+	if _credits:
+		_credits.visible = false
 	_menu.visible = s == State.MENU
 	_lobby.visible = s == State.LOBBY
 	# Settings is available from the menu AND the lobby (mic setup happens there).
@@ -480,6 +661,8 @@ func _load_game(is_host: bool) -> void:
 	_menu.visible = false
 	_lobby.visible = false
 	_game = GAME_SCENE.instantiate()
+	_game.mouse_sensitivity = Scrapbook.mouse_sensitivity
+	_game.leave_requested.connect(_leave_to_menu)
 	add_child(_game)
 	if _game.has_method("begin"):
 		_game.begin(is_host, _is_test, LobbyManager.players.get(_my_id_safe(), {}).get("spectator", false))
@@ -488,6 +671,8 @@ func _load_game(is_host: bool) -> void:
 ## host quitting out from under us. Tears the game scene down before dropping the
 ## peer so nothing is left running against a dead connection.
 func _leave_to_menu() -> void:
+	if _settings.visible:
+		Scrapbook.save_game()
 	if _game != null:
 		_game.queue_free()
 		_game = null
@@ -507,6 +692,10 @@ func _on_server_disconnected() -> void:
 	_leave_to_menu()
 	_menu_status.text = "the host left — everyone went home."
 
+func _on_connection_failed() -> void:
+	_leave_to_menu()
+	_menu_status.text = "Couldn't reach the host. Check the invitation or try joining again."
+
 func _my_id_safe() -> int:
 	return multiplayer.get_unique_id() if multiplayer.has_multiplayer_peer() else 1
 
@@ -516,8 +705,42 @@ func _button(text: String, cb: Callable) -> Button:
 	var b := Button.new()
 	b.text = text
 	b.custom_minimum_size = Vector2(0, 38)
+	var normal := StyleBoxFlat.new()
+	normal.bg_color = Color("252e36")
+	normal.border_color = Color("665d51")
+	normal.set_border_width_all(1)
+	normal.content_margin_left = 18
+	normal.content_margin_right = 18
+	normal.content_margin_top = 8
+	normal.content_margin_bottom = 8
+	var hover := normal.duplicate() as StyleBoxFlat
+	hover.bg_color = Color("eedfc3")
+	var focus := StyleBoxFlat.new()
+	focus.bg_color = Color.TRANSPARENT
+	focus.border_color = Color("c99b52")
+	focus.set_border_width_all(2)
+	b.add_theme_stylebox_override("normal", normal)
+	b.add_theme_stylebox_override("hover", hover)
+	b.add_theme_stylebox_override("focus", focus)
+	b.add_theme_color_override("font_color", Color("eedfc3"))
+	b.add_theme_color_override("font_hover_color", Color("252e36"))
+	b.mouse_entered.connect(func() -> void:
+		if not b.disabled:
+			_play_menu_sound("ui_focus"))
+	b.focus_entered.connect(func() -> void: _play_menu_sound("ui_focus"))
+	b.pressed.connect(func() -> void: _play_menu_sound("ui_click"))
 	b.pressed.connect(cb)
 	return b
+
+func _play_menu_sound(kind: String) -> void:
+	if kind == "ui_focus":
+		var now := Time.get_ticks_msec()
+		if now - _last_focus_sound < 90:
+			return
+		_last_focus_sound = now
+	_menu_audio.stream = SoundKit.get_stream(kind)
+	_menu_audio.volume_db = -22.0 if kind == "ui_focus" else -14.0
+	_menu_audio.play()
 
 func _label(text: String) -> Label:
 	var l := Label.new()

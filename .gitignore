@@ -16,3 +16,7 @@ Thumbs.db
 
 # Local Claude Code settings (machine-specific permissions)
 .claude/settings.local.json
+
+# Local audit logs and isolated test saves
+.audit-user/
+audit-*.log

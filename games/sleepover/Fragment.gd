@@ -36,8 +36,10 @@ func setup(frag: Dictionary, at: Vector3) -> void:
 	add_child(mesh)
 	var label := Label3D.new()
 	label.text = "✦ %s" % str(frag.get("type", "lore")).to_upper()
-	label.font_size = 34
+	label.font_size = 28
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.visibility_range_end = 2.8
+	label.visibility_range_end_margin = 0.3
 	label.modulate = col
 	label.position.y = 0.75
 	add_child(label)

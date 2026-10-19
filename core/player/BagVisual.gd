@@ -53,6 +53,24 @@ static func skin_for_peer(peer_id: int) -> int:
 static func build(height: float = BAG_HEIGHT, skin: int = 0) -> Node3D:
 	return build_with_eyes(height, skin)[0]
 
+## Temporary cloth gait shared by the local bag and network ghosts. Only the
+## visual changes; physics, camera position and first-person culling are intact.
+## Phase follows distance, so pushing a wall cannot make the bag march in place.
+static func animate_shuffle(visual: Node3D, distance: float, walking: bool, delta: float) -> void:
+	var phase: float = visual.get_meta("gait_phase", 0.0)
+	var weight: float = visual.get_meta("gait_weight", 0.0)
+	var speed := distance / maxf(delta, 0.001)
+	var target := clampf(speed / 0.8, 0.0, 1.0) if walking and distance < 0.5 else 0.0
+	weight = move_toward(weight, target, delta * 8.0)
+	if target > 0.0:
+		phase = fposmod(phase + distance / (BAG_HEIGHT * 2.0) * TAU, TAU)
+	var rock := sin(phase)
+	var squash := (0.5 - 0.5 * cos(phase * 2.0)) * weight * 0.045
+	visual.rotation.z = rock * weight * deg_to_rad(5.0)
+	visual.scale = Vector3(1.0 + squash * 0.5, 1.0 - squash, 1.0 + squash * 0.5)
+	visual.set_meta("gait_phase", phase)
+	visual.set_meta("gait_weight", weight)
+
 ## Builds the bag AND returns [root, BagEyes] so a caller can drive eye-states.
 ## Every segment is a fraction of `height`, so the whole character scales from
 ## the one number.
@@ -88,13 +106,18 @@ static func build_with_eyes(height: float = BAG_HEIGHT, skin: int = 0) -> Array:
 	var zip_mat := StandardMaterial3D.new()
 	zip_mat.albedo_color = Color(0.92, 0.92, 0.88)
 	zip_mat.roughness = 0.4
-	var zipper := MeshInstance3D.new()
-	var zip_box := BoxMesh.new()
-	zip_box.size = Vector3(0.030 * height, 0.66 * height, 0.02)
-	zipper.mesh = zip_box
-	zipper.position = Vector3(0, 0.42 * height, -0.265 * height)
-	zipper.set_surface_override_material(0, zip_mat)
-	root.add_child(zipper)
+	# Keep the zipper continuous for other players, but hide its upper section
+	# from our own camera: it otherwise rises directly through the crosshair.
+	for bounds in [Vector2(0.09, 0.55), Vector2(0.55, 0.75)]:
+		var zipper := MeshInstance3D.new()
+		var zip_box := BoxMesh.new()
+		zip_box.size = Vector3(0.030 * height, (bounds.y - bounds.x) * height, 0.02)
+		zipper.mesh = zip_box
+		zipper.position = Vector3(0, (bounds.x + bounds.y) * 0.5 * height, -0.265 * height)
+		zipper.set_surface_override_material(0, zip_mat)
+		if bounds.x >= 0.55:
+			zipper.set_meta(HEAD_PART_META, true)
+		root.add_child(zipper)
 
 	var pull := MeshInstance3D.new()
 	var pull_box := BoxMesh.new()

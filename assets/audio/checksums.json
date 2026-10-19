@@ -1,0 +1,130 @@
+[
+  {
+    "path": "assets/audio/antumdeluge/zipper.ogg",
+    "sha256": "7929fa8b0a58fe1cd0c5d5064b1b769458ae3cab704ec2b1f3cc7ad675b356ca"
+  },
+  {
+    "path": "assets/audio/brandon-morris/dog_barking_mono.wav",
+    "sha256": "bbd0f908b3514dd3bd7d2bc04dcf64f8d360a161e7f43cac5d6761e7add79451"
+  },
+  {
+    "path": "assets/audio/kenney-impact/footstep_carpet_000.ogg",
+    "sha256": "b9524658b52a99a20590f8feefc103088637fd13ea8ec35811aee785e1f2f330"
+  },
+  {
+    "path": "assets/audio/kenney-impact/footstep_carpet_001.ogg",
+    "sha256": "9af3c3f76705107339e72036e4053bdca3eaa50ad31c8c929f42ce8d40e5d781"
+  },
+  {
+    "path": "assets/audio/kenney-impact/footstep_carpet_002.ogg",
+    "sha256": "9af3c3f76705107339e72036e4053bdca3eaa50ad31c8c929f42ce8d40e5d781"
+  },
+  {
+    "path": "assets/audio/kenney-impact/footstep_wood_000.ogg",
+    "sha256": "5f1c252942a220d658121bd9417448cd19649ded9fff2ff15f6e50899373ce8e"
+  },
+  {
+    "path": "assets/audio/kenney-impact/footstep_wood_001.ogg",
+    "sha256": "e4f68e1c9fd55b4dc8ca89ed2bbab6f200171bc54bdc18aa96b80d8e7336f462"
+  },
+  {
+    "path": "assets/audio/kenney-impact/footstep_wood_002.ogg",
+    "sha256": "9ff095b05cee5eec40b081defe3f0eef7232bb16d4865ce03b9f6dbab875cfdd"
+  },
+  {
+    "path": "assets/audio/kenney-impact/impactMetal_light_000.ogg",
+    "sha256": "33b5e6e37c6e9d54e07bf5a89b12c76e879f40c1ea83cdd82714df1d6f9fec6d"
+  },
+  {
+    "path": "assets/audio/kenney-impact/impactMetal_light_001.ogg",
+    "sha256": "fba69c467ddd85da7b1d82e259f936b876d9ba6a3d6f1b24bdd10468e46bfe08"
+  },
+  {
+    "path": "assets/audio/kenney-impact/impactMetal_light_002.ogg",
+    "sha256": "25a96f90a9a1f88a531e824e126f0519504625e5635e65a72e4f31611428db29"
+  },
+  {
+    "path": "assets/audio/kenney-impact/impactSoft_heavy_000.ogg",
+    "sha256": "49e7ca88743fca974bb8676ea138b751cfd8f9033b5e7af8736c2a215d6edbc1"
+  },
+  {
+    "path": "assets/audio/kenney-impact/impactSoft_heavy_001.ogg",
+    "sha256": "4d0096364ba9e46119d2ff6df493fdc101bd2e1efae061da5e5f77a53b3fdcb6"
+  },
+  {
+    "path": "assets/audio/kenney-impact/impactSoft_heavy_002.ogg",
+    "sha256": "d130ae541951243d3f6ed963d0057450a445ffe117fbf9a084d34eb1635cb563"
+  },
+  {
+    "path": "assets/audio/kenney-interface/click_001.ogg",
+    "sha256": "ccfb7fa0cccdd9faec0eb16033c732b1e308d139d80f799161495d58f7adcdb9"
+  },
+  {
+    "path": "assets/audio/kenney-interface/click_002.ogg",
+    "sha256": "adcd1f4adc35f1b41bc1b5bbefeff7aa44f2f3f0d96d3199b544140c7c1e761c"
+  },
+  {
+    "path": "assets/audio/kenney-interface/select_001.ogg",
+    "sha256": "aec0c31ea934a35936ae0d2ab8fac8123c93aa5647f935853a58dbaf90278b7a"
+  },
+  {
+    "path": "assets/audio/kenney-rpg/bookFlip1.ogg",
+    "sha256": "fa81ac2fedc8c641661b87e349630a36c9800e795e0c800e029214efdbe26a7d"
+  },
+  {
+    "path": "assets/audio/kenney-rpg/bookFlip2.ogg",
+    "sha256": "3409042acbfaebc24c1a6327dc073e36f9250841712e96c5040da566a97df73c"
+  },
+  {
+    "path": "assets/audio/kenney-rpg/bookFlip3.ogg",
+    "sha256": "c85db5dceb3f1df073e960630277eaa88a5afda0477c1ddd68dad707621767be"
+  },
+  {
+    "path": "assets/audio/kenney-rpg/cloth1.ogg",
+    "sha256": "ddb93a3671233f95da0e0b10367f082f7eb42fa6caaddcf776410aa8833c747d"
+  },
+  {
+    "path": "assets/audio/kenney-rpg/cloth2.ogg",
+    "sha256": "8a7451193c38bc05483aec25dd193e163a15d44cf7fff04ac7912573231b0201"
+  },
+  {
+    "path": "assets/audio/kenney-rpg/cloth3.ogg",
+    "sha256": "a48632d17a4f1416541d261a32a31612e01267144c407fa3ecab3ff410f0085b"
+  },
+  {
+    "path": "assets/audio/kenney-rpg/cloth4.ogg",
+    "sha256": "e7ab9a6c4466dea874196c61f59bf1da05cfe58748f42fadd695d441a154a99b"
+  },
+  {
+    "path": "assets/audio/kenney-rpg/creak1.ogg",
+    "sha256": "8a346186fd297254248cab8e8117060a52a5cf2a84f603153a762108550ea95e"
+  },
+  {
+    "path": "assets/audio/kenney-rpg/creak2.ogg",
+    "sha256": "8a990afdc03aebb91d528f5385e2f95582dbfa8e2c12c71098ab01be9142294a"
+  },
+  {
+    "path": "assets/audio/kenney-rpg/creak3.ogg",
+    "sha256": "f9638787f95004b9d2d06f8eff8e99d4e594c21b51947daf562856fbcec905d1"
+  },
+  {
+    "path": "assets/audio/kenney-rpg/metalLatch.ogg",
+    "sha256": "ba9ba60b172b3ebc131a940f25793cd2e207aca7af73dc80d637277f060f1708"
+  },
+  {
+    "path": "assets/audio/kenney-rpg/metalPot1.ogg",
+    "sha256": "159def979e8e386c2c539f5e99cc30a080eb2dcb6c911fa2e4ccc0785b2522fd"
+  },
+  {
+    "path": "assets/audio/kenney-rpg/metalPot2.ogg",
+    "sha256": "8e1f820d217d380fde10e969d109db34303e3f4d11c3951926eddef813d04ae2"
+  },
+  {
+    "path": "assets/audio/kenney-rpg/metalPot3.ogg",
+    "sha256": "d306e5b848f6843332d0ca19f8f7dfe5796aeb56d8273902b085df463273f1dc"
+  },
+  {
+    "path": "assets/audio/mikeask/breathing.wav",
+    "sha256": "08d9c9e15426f0cd889b63867a3bc68bafd985e8d39fd57f805d4372b23aeeca"
+  }
+]

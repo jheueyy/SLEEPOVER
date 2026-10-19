@@ -1,5 +1,6 @@
 class_name Objective
 extends Node3D
+signal dog_barked(at: Vector3)
 ## Runtime instance of one ObjectiveDef. Owns its gray-box props (clue + action),
 ## runs the local player's interaction, and emits `completed` when solved. All
 ## six kinds share this node; behaviour branches on `def.kind`. Built identically
@@ -10,7 +11,6 @@ signal completed(id: String)
 signal action_noise(pos: Vector3, loudness: float)
 signal toast(text: String)
 signal revealed(id: String)   ## a player read this objective's clue (HUD reveal)
-signal keys_granted(at: Vector3)  ## DOG only: the hand-off puts HOUSE KEYS in a bag
 
 enum Tracker { NOT_STARTED, IN_PROGRESS, DONE }
 
@@ -34,7 +34,11 @@ var _dog_i: int = 0
 var _dog_path: PackedVector3Array = []
 var _dog_path_i: int = 0
 var _dog_repath_cd: float = 0.0
+var _dog_bark_t: float = 0.0
 var _has_snack: bool = false
+var _dog_visual: Node3D
+var _dog_previous := Vector3.ZERO
+var _dog_gait := 0.0
 var _entry: String = ""
 var _entry_digit: int = -1
 var _entry_t: float = 0.0
@@ -61,9 +65,14 @@ func setup(d: ObjectiveDef, s: Dictionary, blurred: bool) -> void:
 			# inventory item (a pure noise decoy), and two dog-food pickups that
 			# behave differently is a confusion players walk straight into.
 			# Don't rename this back without renaming that.
-			_clue = _prop(def.clue_spots[0], Color(0.9, 0.8, 0.3), "BEEF JERKY")
-			_dog = _prop(HouseSuburban.DOG_PATH[0] * HouseSuburban.S, Color(0.5, 0.35, 0.2), "DOG (keys!)")
+			# Main spawns the jerky as a shared, carryable inventory item.
+			_dog = Node3D.new()
+			add_child(_dog)
+			_dog.position = HouseSuburban.DOG_PATH[0] * HouseSuburban.S
 			_dog.position.y = HouseSuburban.DOG_PATH[0].y
+			_dog_visual = DogVisual.build()
+			_dog.add_child(_dog_visual)
+			_dog_previous = _dog.global_position
 		ObjectiveDef.Kind.DEADBOLT:
 			_action = _prop(def.action_spot + Vector3.UP * 0.4, Color(0.7, 0.5, 0.3), "DEADBOLT")
 		ObjectiveDef.Kind.GLASSES:
@@ -76,17 +85,51 @@ func force_done() -> void:
 	done = true
 	if _clue != null: _clue.visible = false
 	if _action != null: _action.visible = false
-	if _dog != null: _dog.visible = false
 	_panel_open = false
+
+func retry_completion() -> void:
+	# Restore a locally predicted solve that the host could not accept.
+	done = false
+	_entry = ""
+	_entry_digit = -1
+	_entry_t = 0.0
+	_hold_t = 0.0
+	_panel_open = false
+	if _clue != null:
+		_clue.visible = not (def.kind == ObjectiveDef.Kind.DOG and _has_snack)
+	if _action != null: _action.visible = true
+	if _dog != null: _dog.visible = true
 
 # ── Per-frame ──────────────────────────────────────────────────────────────
 
-func update(delta: float, player_pos: Vector3, body_count_near_action: int) -> void:
+func _process(delta: float) -> void:
+	if not is_instance_valid(_dog_visual):
+		return
+	var movement := _dog.global_position - _dog_previous
+	_dog_previous = _dog.global_position
+	var distance := Vector2(movement.x, movement.z).length()
+	var moving := not done and distance > 0.0001 and distance < 0.5
+	if moving:
+		_dog_gait += distance * TAU / 0.5
+		_dog_visual.rotation.y = lerp_angle(_dog_visual.rotation.y,
+			atan2(-movement.x, -movement.z), minf(delta * 9.0, 1.0))
+	DogVisual.animate(_dog_visual, _dog_gait, moving, done, delta)
+
+func update(delta: float, player_pos: Vector3, body_count_near_action: int, can_interact: bool = true, simulate_dog: bool = true) -> void:
 	if done:
+		return
+	if not can_interact:
+		_hold_t = 0.0
+		_entry_digit = -1
+		_entry_t = 0.0
+		_panel_open = false
+		if def.kind == ObjectiveDef.Kind.DOG and simulate_dog:
+			_update_dog(delta)
 		return
 	match def.kind:
 		ObjectiveDef.Kind.DOG:
-			_update_dog(delta)
+			if simulate_dog:
+				_update_dog(delta)
 		ObjectiveDef.Kind.DEADBOLT:
 			# Two bodies at the door + the local player holding E = progress.
 			if body_count_near_action >= 2 and _near(def.action_spot, player_pos) \
@@ -124,11 +167,10 @@ func _update_dog(delta: float) -> void:
 		step.y = 0.0
 		if step.length() > 0.02:
 			_dog.position += step.normalized() * DOG_SPEED * delta
-	_entry_t += delta
-	if _entry_t >= 4.0:  # bark cadence
-		_entry_t = 0.0
-		action_noise.emit(_dog.global_position, def.noise_loudness)
-		SoundKit.play_at(self, _dog.global_position, "bark")
+	_dog_bark_t += delta
+	if _dog_bark_t >= 4.0:
+		_dog_bark_t = fmod(_dog_bark_t, 4.0)
+		dog_barked.emit(_dog.global_position)
 
 func _tick_rotary(delta: float, player_pos: Vector3) -> void:
 	if _entry_digit == -1:
@@ -162,8 +204,6 @@ func prompt(player_pos: Vector3) -> String:
 			if _action != null and _near(_action.position, player_pos):
 				return def.action_prompt
 		ObjectiveDef.Kind.DOG:
-			if not _has_snack and _near(_clue.position, player_pos):
-				return "E: GRAB JERKY"
 			if _has_snack and _dog != null and _near(_dog.position, player_pos):
 				return "E: GIVE JERKY (get keys)"
 		ObjectiveDef.Kind.DEADBOLT:
@@ -184,7 +224,7 @@ func grab_available(player_pos: Vector3) -> bool:
 		ObjectiveDef.Kind.LANDLINE, ObjectiveDef.Kind.GARAGE_CODE, ObjectiveDef.Kind.BREAKER:
 			return not _revealed and _clue != null and _near(_clue.position, player_pos)
 		ObjectiveDef.Kind.DOG:
-			return not _has_snack and _clue != null and _near(_clue.position, player_pos)
+			return false  # the world item owns the unzip pickup
 		ObjectiveDef.Kind.GLASSES:
 			return blurred_is_me and _clue != null and _near(_clue.position, player_pos)
 	return false
@@ -194,7 +234,7 @@ func grab_available(player_pos: Vector3) -> bool:
 ## obvious experiment ("feed the dog the dog food") produces a REACTION rather than
 ## silence, which reads as a bug. It is deliberately inert: the can is a noise decoy
 ## and can never stand in for the jerky, so this must never touch `_has_snack`,
-## `_finish()` or `keys_granted`.
+## or complete the task.
 func dog_sniffs_can(at: Vector3) -> bool:
 	if done or def.kind != ObjectiveDef.Kind.DOG or _dog == null:
 		return false
@@ -216,8 +256,6 @@ func interact_distance(player_pos: Vector3) -> float:
 			if _action != null and _near(_action.position, player_pos):
 				best = minf(best, player_pos.distance_to(_action.position))
 		ObjectiveDef.Kind.DOG:
-			if not _has_snack and _clue != null and _near(_clue.position, player_pos):
-				best = minf(best, player_pos.distance_to(_clue.position))
 			if _has_snack and _dog != null and _near(_dog.position, player_pos):
 				best = minf(best, player_pos.distance_to(_dog.position))
 		ObjectiveDef.Kind.GLASSES:
@@ -243,18 +281,10 @@ func try_interact(player_pos: Vector3) -> bool:
 				_entry_digit = -1
 				return true
 		ObjectiveDef.Kind.DOG:
-			if not _has_snack and _near(_clue.position, player_pos):
-				_has_snack = true
-				_clue.visible = false
-				toast.emit("Grabbed the jerky. Now find the dog.")
-				return true
 			if _has_snack and _dog != null and _near(_dog.position, player_pos):
-				action_noise.emit(_dog.global_position, def.noise_loudness)
-				SoundKit.play_at(self, _dog.global_position, "bark")
 				# The dog doesn't unlock anything — it SURRENDERS THE KEYS. The
 				# feeder now carries them (a whole inventory slot) to the back
 				# door, and dropping or getting caught puts them on the floor.
-				keys_granted.emit(_dog.global_position)
 				_finish()
 				return true
 		ObjectiveDef.Kind.GLASSES:
@@ -374,7 +404,7 @@ func tracker_detail() -> String:
 		ObjectiveDef.Kind.BREAKER:
 			return "fuses %s" % _colour_order()
 		ObjectiveDef.Kind.DOG:
-			return "lure the dog with a snack"
+			return "carry beef jerky to the dog, then carry its keys to the back door"
 		ObjectiveDef.Kind.DEADBOLT:
 			return "2 players, hold E together"
 		ObjectiveDef.Kind.GLASSES:
@@ -394,7 +424,6 @@ func _finish() -> void:
 	done = true
 	if _clue != null: _clue.visible = false
 	if _action != null: _action.visible = false
-	if _dog != null: _dog.visible = false
 	_panel_open = false
 	completed.emit(def.id)
 
@@ -415,8 +444,10 @@ func _prop(at: Vector3, color: Color, text: String) -> Node3D:
 	prop.add_child(mesh)
 	var label := Label3D.new()
 	label.text = text
-	label.font_size = 40
+	label.font_size = 28
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.visibility_range_end = 2.8
+	label.visibility_range_end_margin = 0.3
 	label.position.y = 0.9
 	prop.add_child(label)
 	prop.position = at

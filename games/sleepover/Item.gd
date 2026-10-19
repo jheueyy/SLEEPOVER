@@ -7,13 +7,18 @@ extends Node3D
 ## always slow and loud). Taking is host-authoritative: first claim wins, the
 ## prop vanishes for everyone, and only the claimant's inventory gains it.
 
-enum Kind { CAN, POPPER, KEYS }
+enum Kind { CAN, POPPER, KEYS, JERKY }
 
 const NEAR := 1.2   ## interaction reach (m), matches Objective/Fragment
 
 ## Display + gray-box prop data per kind. Tone law: creepy-cute household
 ## clutter, nothing that reads as a weapon.
 const DEFS := {
+	Kind.JERKY: {
+		"name": "BEEF JERKY",
+		"color": Color("c48a54"),
+		"blurb": "carry it to the dog; use the slot away from it to set it down.",
+	},
 	Kind.CAN: {
 		"name": "CAN OF DOG FOOD",
 		"color": Color(0.75, 0.45, 0.28),
@@ -40,34 +45,13 @@ func setup(p_uid: int, p_kind: int, at: Vector3) -> void:
 	kind = p_kind
 	position = at
 	var col: Color = DEFS[kind]["color"]
-	var mesh := MeshInstance3D.new()
-	if kind == Kind.CAN:
-		# A straight tin — distinct in silhouette from the popper's cone.
-		var tin := CylinderMesh.new()
-		tin.top_radius = 0.09
-		tin.bottom_radius = 0.09
-		tin.height = 0.22
-		mesh.mesh = tin
-	elif kind == Kind.POPPER:
-		var cone := CylinderMesh.new()
-		cone.top_radius = 0.02
-		cone.bottom_radius = 0.09
-		cone.height = 0.3
-		mesh.mesh = cone
-	else:
-		var keys := BoxMesh.new()
-		keys.size = Vector3(0.22, 0.06, 0.14)
-		mesh.mesh = keys
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = col
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mesh.set_surface_override_material(0, mat)
-	mesh.position.y = 0.16
-	add_child(mesh)
+	add_child(ItemVisual.build(kind))
 	var label := Label3D.new()
 	label.text = display_name()
 	label.font_size = 30
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.visibility_range_end = 2.8
+	label.visibility_range_end_margin = 0.3
 	label.modulate = col
 	label.position.y = 0.6
 	add_child(label)

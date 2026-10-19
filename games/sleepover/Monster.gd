@@ -16,6 +16,7 @@ class_name NoiseMonster
 signal woke_up
 signal state_changed(new_state: int)
 signal lunged_hit(target: Node3D)
+signal footstep
 
 @export var move_speed: float = 2.6        ## chase speed: > shuffle (2.0), < hop chain (~3.6). FEEL.md
 @export var patrol_speed_mult: float = 0.45 ## patrol crawl, relative to move_speed
@@ -150,6 +151,7 @@ func _build_body() -> void:
 func _build_audio() -> void:
 	# The lullaby hum: how players track it through walls. Always on while awake.
 	_hum = AudioStreamPlayer3D.new()
+	_hum.bus = SoundKit.EFFECTS_BUS
 	_hum.stream = SoundKit.get_stream("hum")
 	_hum.max_distance = 18.0
 	_hum.volume_db = -6.0
@@ -157,12 +159,14 @@ func _build_audio() -> void:
 	add_child(_hum)
 
 	_creak = AudioStreamPlayer3D.new()
+	_creak.bus = SoundKit.EFFECTS_BUS
 	_creak.stream = SoundKit.get_stream("creak")
 	_creak.max_distance = 12.0
 	_creak.volume_db = -4.0
 	add_child(_creak)
 
 	_screech = AudioStreamPlayer3D.new()
+	_screech.bus = SoundKit.EFFECTS_BUS
 	_screech.stream = SoundKit.get_stream("screech")
 	_screech.max_distance = 30.0
 	_screech.volume_db = 2.0
@@ -170,6 +174,7 @@ func _build_audio() -> void:
 
 	# The shush — "go to sleep" — when it corners a survivor mid-chase.
 	_shush = AudioStreamPlayer3D.new()
+	_shush.bus = SoundKit.EFFECTS_BUS
 	_shush.stream = SoundKit.get_stream("shush")
 	_shush.max_distance = 10.0
 	_shush.volume_db = 0.0
@@ -530,7 +535,8 @@ func _physics_process(delta: float) -> void:
 	# Floorboard creaks while it moves — the "you hear it before you see it".
 	_creak_cd -= delta
 	if _creak_cd <= 0.0 and _move_dir.length() > 0.1:
-		_creak.play()
+		play_footstep()
+		footstep.emit()
 		_creak_cd = randf_range(1.6, 3.8) * (0.55 if _state >= State.CHASE else 1.0)
 
 	# Dread ramp: the lullaby hum SWELLS as it closes on the nearest survivor,
@@ -549,6 +555,11 @@ func _physics_process(delta: float) -> void:
 		# kill you, it's here to put you to sleep. Story told through behavior.
 		_shush.play()
 		_close_shush_cd = close_shush_cooldown
+
+func play_footstep() -> void:
+	_creak.stream = SoundKit.get_stream("creak")
+	_creak.pitch_scale = SoundKit.variation_pitch() * 0.85
+	_creak.play()
 
 func _nearest_target_dist() -> float:
 	var best := INF
